@@ -326,4 +326,39 @@ Test describe("transparency") {
     }
 }
 
+Test describe("rich text") {
+    Test it("wraps runs in several fonts at spaces") {
+        runs = [["Some ", "Helvetica"], ["bold", "Helvetica-Bold"], [", then ", "Helvetica"], ["code()", "Courier", "#aa0000"], [" and more words", "Helvetica"]]
+        lines = Pdf wrapRuns(runs, 100, 12)
+        Test assertEqual(lines size, 3)
+        first = lines first at(0)
+        // the space after "Some" keeps its style; "bold," stays one word across runs
+        Test assertEqual(first map { |p| p at(0) }, ["Some ", "bold", ", then"])
+        Test assertEqual(first map { |p| p at(1) }, ["Helvetica", "Helvetica-Bold", "Helvetica"])
+        Test assertEqual((lines at(1) at(0)) first, ["code() ", "Courier", "#aa0000"])
+        lines each { |l| Test assertTrue((l at(1)) <= 100) }
+        w = Pdf textWidth("Some ", "Helvetica", 12) + Pdf textWidth("bold", "Helvetica-Bold", 12) + Pdf textWidth(", then", "Helvetica", 12)
+        Test assertEqual(Math round((lines first at(1)) * 1000), Math round(w * 1000))
+    }
+    Test it("merges runs of one style and skips empty ones") {
+        lines = Pdf wrapRuns([["a ", "Helvetica"], ["", "Courier"], ["b", "Helvetica"]], 500, 10)
+        Test assertEqual(lines first at(0), [["a b", "Helvetica", nil]])
+        Test assertEqual(Pdf wrapRuns([], 100, 10), [])
+    }
+    Test it("draws a line of pieces and lays out rich paragraphs") {
+        doc = Pdf new()
+        page = doc addPage()
+        w = page runs(72, 100, [["a", "Helvetica", nil], ["b", "Courier", "#ff0000"]], 10)
+        Test assertEqual(Math round(w * 1000), Math round((Pdf textWidth("a", "Helvetica", 10) + Pdf textWidth("b", "Courier", 10)) * 1000))
+        Test assertTrue(page content contains("BT /F2 10 Tf 77.56 692 Td (b) Tj ET"))
+        Test assertTrue(page content contains("1 0 0 rg"))
+        flow = doc flow(72)
+        flow font("Helvetica", 12)
+        y0 = flow y
+        flow richParagraph([["word ", "Helvetica"]], "center", 10)
+        Test assertEqual(flow y, y0 + 14.4)
+        Check structure(doc render)
+    }
+}
+
 Test run

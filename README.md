@@ -57,6 +57,7 @@ position is the start of its baseline.
 | `Pdf textWidth(str, font, size)` | Width in points |
 | `Pdf ascent(font, size)`, `descent(...)`, `capHeight(...)` | Heights in points (descent is negative) |
 | `Pdf wrap(str, width, font, size)` | Lines no wider than width: breaks at spaces, inside over-long words, and at `"\n"` |
+| `Pdf wrapRuns(runs, width, size)` | Rich text -- runs `[text, font]` or `[text, font, "#rrggbb"]` -- broken into lines at spaces (a word may span runs); each line is `[pieces, width]` for `page runs` |
 | `loadImage(path)` | A `.png`, `.jpg` or `.jpeg` file as an image to draw |
 | `png(bytes)`, `jpeg(bytes)` | The same from a file's bytes |
 | `image(w, h, channels, pixels)` | From 8-bit pixels, row by row: 1 gray, 2 gray + alpha, 3 RGB, 4 RGBA |
@@ -69,6 +70,7 @@ position is the start of its baseline.
 | `text(x, y, str, angle = 0)` | Text at (x, y); angle in degrees, counterclockwise |
 | `textAlign("left" \| "center" \| "right")`, `textBaseline("alphabetic" \| "top" \| "middle" \| "bottom")` | Where `text` puts the text relative to (x, y), as in an HTML canvas; the offset turns with rotated text |
 | `textWidth(str)`, `wrap(str, width)` | In the current font |
+| `runs(x, y, pieces, size)` | One line of rich text from `Pdf wrapRuns` with its baseline at (x, y); returns its width |
 | `paragraph(x, y, width, str, align = "left", lineHeight = nil)` | Wrapped text in a box whose top is y; returns the y below it |
 | `fillColor(r, g, b)`, `strokeColor(r, g, b)` | 0..255 each, or one `"#rrggbb"` string |
 | `lineWidth(w)`, `dash([on, off, ...])`, `dash(nil)` | |
@@ -90,6 +92,7 @@ position is the start of its baseline.
 |---|---|
 | `font(name, size)`, `color(r, g, b)` / `color("#rrggbb")` / `color(nil)`, `lineHeight(h)` | Text style; carries over to new pages |
 | `paragraph(str, align = "left")` | Wrapped across the page width; starts a new page when a line would cross the bottom margin |
+| `richParagraph(runs, align = "left", indent = 0)` | The same for rich text (runs as for `Pdf wrapRuns`), at the flow's font size; `indent` narrows it from the left |
 | `space(h)` | Vertical space |
 | `ensure(h)` | Starts a new page unless h points fit; returns the page to draw on at (`x`, `y`) |
 | `advance(h)` | Move down past what you drew |

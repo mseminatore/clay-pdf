@@ -139,6 +139,73 @@ Pdf = Object clone {
         lines
     }
 
+    // Rich text -- runs in several fonts and colors -- broken into lines no
+    // wider than width, at spaces (a word may span runs, as in "**bold**,").
+    // A run is [text, font] or [text, font, color]; color is "#rrggbb", or
+    // nil for black. Each line is [pieces, width], its pieces runs again
+    // (adjacent ones in the same style merged), to draw with page runs.
+    wrapRuns(runs, width, size = 12) {
+        // words: [fragments, spaceBefore], a fragment [text, font, color]
+        words = []
+        frags = []
+        spaced = false
+        pending = false
+        runs each { |run|
+            font = run at(1)
+            color = (run size > 2) ifTrue { run at(2) } ifFalse { nil }
+            parts = ((run at(0)) toString replace("\n", " ")) split(" ")
+            j = 0
+            parts each { |part|
+                (j > 0) ifTrue {
+                    (frags size > 0) ifTrue { words push([frags, spaced]); frags = []; spaced = false }
+                    pending = true
+                }
+                (part != "") ifTrue {
+                    (frags size == 0) ifTrue { spaced = pending; pending = false }
+                    frags push([part, font, color])
+                }
+                j = j + 1
+            }
+        }
+        (frags size > 0) ifTrue { words push([frags, spaced]) }
+
+        lines = []
+        line = []
+        lineW = 0
+        words each { |word|
+            fr = word at(0)
+            w = 0
+            fr each { |f| w = w + Pdf textWidth(f at(0), f at(1), size) }
+            // a space between words takes the style of the text before it
+            prev = (line size > 0) ifTrue { line at(line size - 1) } ifFalse { nil }
+            gap = ((prev != nil) && (word at(1))) ifTrue { Pdf textWidth(" ", prev at(1), size) } ifFalse { 0 }
+            ((line size > 0) && ((lineW + gap + w) > width)) ifTrue {
+                lines push([line, lineW])
+                line = []
+                lineW = 0
+                gap = 0
+            }
+            (gap > 0) ifTrue { line = Pdf _addPiece(line, [" ", prev at(1), prev at(2)]) }
+            fr each { |f| line = Pdf _addPiece(line, f) }
+            lineW = lineW + gap + w
+        }
+        (line size > 0) ifTrue { lines push([line, lineW]) }
+        lines
+    }
+
+    // A piece added to a line, joined to the last one when the style matches
+    _addPiece(line, piece) {
+        (line size > 0) ifTrue {
+            last = line at(line size - 1)
+            ((last at(1) == piece at(1)) && (last at(2) == piece at(2))) ifTrue {
+                line setAt(line size - 1, [(last at(0)) + (piece at(0)), last at(1), last at(2)])
+                return line
+            }
+        }
+        line push(piece)
+        line
+    }
+
     // How many bytes of str fit in width, ending on a UTF-8 character boundary
     // (at least one character)
     _fit(str, width, font, size) {
@@ -414,6 +481,21 @@ PdfPage = Object clone {
     textWidth(str) { Pdf textWidth(str, _fontName, _fontSize) }
     wrap(str, width) { Pdf wrap(str, width, _fontName, _fontSize) }
 
+    // One line of rich text (pieces from Pdf wrapRuns) with its baseline
+    // starting at (x, y); returns its width. Leaves the font and color of
+    // the last piece set.
+    runs(x, y, pieces, size = 12) {
+        cx = x
+        pieces each { |p|
+            self font(p at(1), size)
+            c = (p size > 2) ifTrue { p at(2) } ifFalse { nil }
+            self fillColor(c ?? "#000000")
+            self _text(cx, y, p at(0), 0)
+            cx = cx + Pdf textWidth(p at(0), p at(1), size)
+        }
+        cx - x
+    }
+
     // Where text(x, y, ...) puts the text relative to (x, y), like a canvas:
     // textAlign "left", "center" or "right"; textBaseline "alphabetic" (the
     // baseline), "top", "middle" (half the capital height) or "bottom"
@@ -684,6 +766,24 @@ PdfFlow = Object clone {
             ((_y + lh) > self bottom) ifTrue { self newPage() }
             self _style
             _page paragraph(_margin, _y, self width, line, align, lh)
+            self _y = _y + lh
+        }
+        self
+    }
+
+    // Rich text (runs as for Pdf wrapRuns: [text, font] or [text, font,
+    // color]) at the flow's font size, wrapped and laid out like paragraph.
+    // indent: points from the left margin, for every line
+    richParagraph(runs, align = "left", indent = 0) {
+        lh = _lineHeight ?? (_fontSize * 1.2)
+        w = self width - indent
+        ascent = Pdf ascent("Helvetica", _fontSize)
+        (Pdf wrapRuns(runs, w, _fontSize)) each { |line|
+            ((_y + lh) > self bottom) ifTrue { self newPage() }
+            dx = 0
+            (align == "center") ifTrue { dx = (w - line at(1)) / 2 }
+            (align == "right") ifTrue { dx = w - line at(1) }
+            _page runs(_margin + indent + dx, _y + ascent, line at(0), _fontSize)
             self _y = _y + lh
         }
         self
