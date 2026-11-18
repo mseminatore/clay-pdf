@@ -1,8 +1,9 @@
 # pdf
 
 Write PDF files from Clay: pages, text in the 14 standard PDF fonts, lines,
-rectangles, circles, polygons and Bezier paths, colors, dashes and clipping; text
-measuring, word wrap, alignment, and a flow that starts new pages as it fills them.
+rectangles, circles, polygons and Bezier paths, colors, transparency, dashes and
+clipping; PNG and JPEG images; text measuring, word wrap, alignment, and a flow that
+starts new pages as it fills them. clay-plot uses it to save figures as PDF.
 Pure Clay, no native code.
 
 ```clay
@@ -18,7 +19,8 @@ doc save("hello.pdf")
 ```
 
 `examples/hello.clay` draws one of everything; `examples/layout.clay` shows wrapping,
-alignment, axis-style labels and page breaks.
+alignment, axis-style labels and page breaks; `examples/images.clay` shows images
+and transparency.
 
 ### Flowing text
 
@@ -55,6 +57,9 @@ position is the start of its baseline.
 | `Pdf textWidth(str, font, size)` | Width in points |
 | `Pdf ascent(font, size)`, `descent(...)`, `capHeight(...)` | Heights in points (descent is negative) |
 | `Pdf wrap(str, width, font, size)` | Lines no wider than width: breaks at spaces, inside over-long words, and at `"\n"` |
+| `loadImage(path)` | A `.png`, `.jpg` or `.jpeg` file as an image to draw |
+| `png(bytes)`, `jpeg(bytes)` | The same from a file's bytes |
+| `image(w, h, channels, pixels)` | From 8-bit pixels, row by row: 1 gray, 2 gray + alpha, 3 RGB, 4 RGBA |
 
 **Page** (every method returns the page, so calls chain)
 
@@ -73,6 +78,8 @@ position is the start of its baseline.
 | `circle(cx, cy, r, fill = false, stroke = true)`, `ellipse(cx, cy, rx, ry, fill, stroke)` | |
 | `polygon(points, fill = true, stroke = false)` | Closed |
 | `moveTo`, `lineTo`, `curveTo(x1, y1, x2, y2, x, y)`, `closePath`, then `stroke`, `fill`, `fillStroke` | Paths |
+| `image(img, x, y, w = nil, h = nil, opts = nil)` | An image with its top-left corner at (x, y), stretched to w x h points (default: a point per pixel); `#{flipY: true}` draws it upside down |
+| `alpha(fill, stroke = nil)` | Opacity 0..1 of fills and text, and of strokes (default: the same); lasts until changed or `restore` |
 | `save`, `restore`, `clipRect(x, y, w, h)` | Graphics state and clipping |
 | `raw(ops)` | Content-stream operators as-is (PDF coordinates) |
 | `width`, `height`, `fontName`, `fontSize` | |
@@ -88,6 +95,23 @@ position is the start of its baseline.
 | `advance(h)` | Move down past what you drew |
 | `page`, `newPage`, `x`, `y`, `width`, `bottom` | |
 
+## Images
+
+```clay norun
+logo = doc loadImage("logo.png")
+page image(logo, 72, 72, 144, 48)
+page image(logo, 72, 140)                         // a point per pixel
+```
+
+PNG and JPEG data goes into the file still compressed, without being decoded: JPEG as
+it is, and PNG's zlib data with its row predictors (PDF reads both). That covers gray,
+RGB and palette PNGs that are not interlaced. A PNG with an alpha channel has to be
+decoded first, so pass its pixels to `doc image` instead (clay-image's `img pixels`).
+Raw pixels are stored uncompressed; an alpha channel becomes a soft mask, and
+`img mask(grayImage)` sets one by hand. An image drawn several times is stored once.
+Viewers may smooth an image they enlarge; to keep pixels sharp, enlarge it before
+embedding. `examples/images.clay` draws each kind.
+
 ## Text and characters
 
 The standard fonts need no embedding, and every PDF reader has them. Their character
@@ -98,8 +122,8 @@ written as `?`.
 ## Not yet
 
 - Justified text, hyphenation and kerning
-- Images (JPEG can be embedded as-is)
-- Compressed streams (files are larger than they need to be)
+- Compressed content streams and raw-pixel images (PNG and JPEG stay compressed)
+- Interlaced PNGs, and PNGs with alpha without decoding them first
 - Embedded TrueType fonts, for any Unicode text
 - Links, outlines/bookmarks, forms
 
