@@ -254,4 +254,76 @@ Test describe("layout") {
     }
 }
 
+Test describe("images") {
+    Test it("reads PNG headers and keeps the data compressed") {
+        doc = Pdf new()
+        img = doc loadImage("tests/data/rgb.png")
+        Test assertEqual(img width, 3)
+        Test assertEqual(img height, 2)
+        Test assertTrue(img _dict contains("/ColorSpace /DeviceRGB"))
+        Test assertTrue(img _dict contains("/Predictor 15 /Colors 3 /BitsPerComponent 8 /Columns 3"))
+        Test assertTrue(doc loadImage("tests/data/gray.png") _dict contains("/DeviceGray"))
+        Test assertTrue(doc loadImage("tests/data/palette.png") _dict contains("[/Indexed /DeviceRGB 2 "))
+    }
+    Test it("refuses PNGs it can't pass through") {
+        e = Test assertRaises({ Pdf new() loadImage("tests/data/rgba.png") })
+        Test assertTrue(e message contains("alpha"))
+        Test assertRaises({ Pdf new() loadImage("tests/data/interlaced.png") })
+        Test assertRaises({ Pdf new() png("not a png at all") })
+    }
+    Test it("reads JPEG headers") {
+        img = Pdf new() loadImage("tests/data/tiny.jpg")
+        Test assertEqual(img width, 3)
+        Test assertEqual(img height, 2)
+        Test assertTrue(img _dict contains("/DCTDecode"))
+        Test assertRaises({ Pdf new() jpeg("nope") })
+    }
+    Test it("splits alpha from raw pixels into a mask") {
+        doc = Pdf new()
+        opaque = doc image(2, 1, 4, String fromBytes([1, 2, 3, 255, 4, 5, 6, 255]))
+        Test assertEqual(opaque _mask, nil)
+        Test assertEqual(opaque _data bytes, [1, 2, 3, 4, 5, 6])
+        clear = doc image(2, 1, 4, String fromBytes([1, 2, 3, 0, 4, 5, 6, 128]))
+        Test assertEqual(clear _mask _data bytes, [0, 128])
+        ga = doc image(2, 1, 2, String fromBytes([9, 10, 11, 12]))
+        Test assertEqual(ga _data bytes, [9, 11])
+        Test assertEqual(ga _mask _data bytes, [10, 12])
+        Test assertRaises({ doc image(2, 2, 3, "short") })
+        Test assertRaises({ doc image(1, 1, 5, "12345") })
+    }
+    Test it("draws images and writes each one once") {
+        doc = Pdf new()
+        page = doc addPage()
+        img = doc loadImage("tests/data/rgb.png")
+        page image(img, 72, 72, 300, 200)
+        page image(img, 72, 300)
+        page image(doc image(1, 1, 4, String fromBytes([0, 0, 0, 100])), 0, 0, 10, 10, #{flipY: true})
+        Test assertTrue(page content contains("q 300 0 0 200 72 520 cm /Im1 Do Q"))
+        Test assertTrue(page content contains("q 3 0 0 2 72 490 cm /Im1 Do Q"))
+        Test assertTrue(page content contains("q 10 0 0 -10 0 792 cm /Im2 Do Q"))
+        pdf = doc render
+        Test assertEqual(Check structure(pdf), 9)   // 6 + two images + a mask
+        Test assertTrue(pdf contains("/XObject << /Im1 7 0 R /Im2 8 0 R >>"))
+        Test assertTrue(pdf contains("/SMask 9 0 R"))
+        Test assertRaises({ page image("photo.png", 0, 0) })
+    }
+}
+
+Test describe("transparency") {
+    Test it("shares a graphics state per opacity") {
+        doc = Pdf new()
+        page = doc addPage()
+        page alpha(0.5) fillRect(0, 0, 10, 10)
+        page alpha(0.5, 1) alpha(0.5) alpha(2)
+        Test assertTrue(page content contains("/GS1 gs"))
+        Test assertTrue(page content contains("/GS2 gs"))
+        Test assertTrue(page content contains("/GS3 gs"))
+        pdf = doc render
+        Check structure(pdf)
+        Test assertTrue(pdf contains("/GS1 << /Type /ExtGState /ca 0.5 /CA 0.5 >>"))
+        Test assertTrue(pdf contains("/GS2 << /Type /ExtGState /ca 0.5 /CA 1 >>"))
+        Test assertTrue(pdf contains("/GS3 << /Type /ExtGState /ca 1 /CA 1 >>"))
+    }
+}
+
 Test run

@@ -1,0 +1,43 @@
+// Images and transparency: PNG and JPEG files drawn as they are (still
+// compressed), raw pixels with an alpha channel, and see-through shapes.
+//   clay examples/images.clay     (from the brick's directory) -> images.pdf
+import("pdf")
+
+doc = Pdf new()
+doc title("Images")
+page = doc addPage()
+page font("Helvetica-Bold", 18) text(72, 72, "Images and transparency")
+
+// small test images, scaled up: viewers may smooth or keep the pixels
+page font("Helvetica", 10)
+[["tests/data/rgb.png", "RGB PNG"], ["tests/data/gray.png", "gray PNG"],
+ ["tests/data/palette.png", "palette PNG"], ["tests/data/tiny.jpg", "JPEG"]] each { |pair|
+    i = ["tests/data/rgb.png", "tests/data/gray.png", "tests/data/palette.png", "tests/data/tiny.jpg"] indexOf(pair at(0))
+    x = 72 + i * 120
+    page image(doc loadImage(pair at(0)), x, 100, 96, 64)
+    page text(x, 180, pair at(1))
+}
+
+// a horizontal gradient whose alpha fades from left to right, over stripes
+w = 64
+h = 16
+px = []
+h times { |y| w times { |x| px push(x * 4); px push(80); px push(255 - x * 4); px push(x * 4) } }
+fade = doc image(w, h, 4, String fromBytes(px))
+6 times { |i|
+    page fillColor((i % 2 == 0) ifTrue { "#333333" } ifFalse { "#dddddd" }) fillRect(72 + i * 80, 210, 80, 80)
+}
+page image(fade, 72, 220, 480, 60)
+page fillColor("#000000") text(72, 306, "RGBA pixels: the alpha channel becomes a soft mask")
+
+// see-through shapes
+page save
+page alpha(0.5)
+page fillColor("#1f77b4") circle(180, 400, 60, true, false)
+page fillColor("#ff7f0e") circle(240, 400, 60, true, false)
+page fillColor("#2ca02c") circle(210, 450, 60, true, false)
+page restore
+page fillColor("#000000") text(320, 420, "alpha(0.5): overlaps mix")
+
+doc save("images.pdf")
+"wrote images.pdf" println

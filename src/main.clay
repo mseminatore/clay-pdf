@@ -15,16 +15,19 @@
 // grows down, like SVG and screen graphics; a text position is its baseline.
 // Text uses the 14 standard PDF fonts (no embedding); UTF-8 text is mapped to
 // their Windows-1252 character set, and other characters show as "?".
-// Streams are not compressed.
+// Images come from PNG or JPEG files (embedded still compressed) or raw
+// pixels (see images.clay); alpha sets fill and stroke opacity. Other streams
+// are not compressed.
 //
 // Text can be measured (textWidth), wrapped (wrap, paragraph) and aligned
 // (textAlign, textBaseline); doc flow() lays out text top to bottom and starts
 // new pages as needed.
 //
 // Every brick shares one set of top-level names with the program that imports
-// it: this one defines Pdf, PdfPage, PdfFlow, PdfWriter and PdfMetrics.
+// it: this one defines Pdf, PdfPage, PdfFlow, PdfImage, PdfWriter and PdfMetrics.
 
 import("metrics.clay")
+import("images.clay")
 
 Pdf = Object clone {
     // Page sizes in points
@@ -49,6 +52,8 @@ Pdf = Object clone {
         self _height = dims at(1)
         self _pages = []
         self _fontNames = []     // fonts used, in order: /F1, /F2, ...
+        self _gstates = []       // opacities used, "fill stroke": /GS1, ...
+        self _images = []        // images drawn: /Im1, ...
         self _info = #{}
         self
     }
@@ -72,6 +77,17 @@ Pdf = Object clone {
     // A flow: text laid out from the top of a new page down, starting a new
     // page whenever the next line would not fit
     flow(margin = 72) { PdfFlow new(self, margin) }
+
+    // Images to draw with page image (see images.clay)
+    image(w, h, channels, pixels) { PdfImage raw(w, h, channels, pixels) }
+    png(data) { PdfImage png(data) }
+    jpeg(data) { PdfImage jpeg(data) }
+    loadImage(path) {
+        p = path lower
+        ((p endsWith(".jpg")) || (p endsWith(".jpeg"))) ifTrue { return PdfImage jpeg(File read(path)) }
+        (p endsWith(".png")) ifTrue { return PdfImage png(File read(path)) }
+        raise("Pdf: loadImage reads .png and .jpg files, not " + path)
+    }
 
     // The width of text in points, in one of the standard fonts
     textWidth(str, font = "Helvetica", size = 12) {
@@ -172,6 +188,16 @@ Pdf = Object clone {
         fontBase = 4
         pageBase = fontBase + nFonts
         infoNum = pageBase + 2 * nPages
+        // then the images and their masks
+        images = []
+        _images each { |img|
+            (images contains(img)) ifFalse { images push(img) }
+            m = img _mask
+            ((m != nil) && ((images contains(m)) == false)) ifTrue { images push(m) }
+        }
+        imageNums = #{}
+        last = infoNum
+        images size times { |k| imageNums set(k toString, infoNum + 1 + k); last = infoNum + 1 + k }
 
         w object(1, "<< /Type /Catalog /Pages 2 0 R >>")
         kids = []
@@ -188,7 +214,23 @@ Pdf = Object clone {
             fontRefs push("/F" + (i + 1) toString + " " + (fontBase + i) toString + " 0 R")
             i = i + 1
         }
-        w object(3, "<< /Font << " + (fontRefs join(" ")) + " >> /ProcSet [/PDF /Text] >>")
+        res = "<< /Font << " + (fontRefs join(" ")) + " >>"
+        (_gstates size > 0) ifTrue {
+            gs = []
+            _gstates size times { |k|
+                ab = (_gstates at(k)) split(" ")
+                gs push("/GS" + (k + 1) toString + " << /Type /ExtGState /ca " + (ab at(0)) + " /CA " + (ab at(1)) + " >>")
+            }
+            res = res + " /ExtGState << " + (gs join(" ")) + " >>"
+        }
+        (_images size > 0) ifTrue {
+            xo = []
+            _images size times { |k|
+                xo push("/Im" + (k + 1) toString + " " + (imageNums get((images indexOf(_images at(k))) toString)) toString + " 0 R")
+            }
+            res = res + " /XObject << " + (xo join(" ")) + " >>"
+        }
+        w object(3, res + " /ProcSet [/PDF /Text /ImageB /ImageC /ImageI] >>")
         i = 0
         { i < nFonts } whileTrue {
             name = _fontNames at(i)
@@ -212,7 +254,15 @@ Pdf = Object clone {
         _info keys each { |k| entries push("/" + k + " " + (Pdf string(_info get(k)))) }
         entries push("/Producer (Clay pdf)")
         w object(infoNum, "<< " + (entries join(" ")) + " >>")
-        w finish(infoNum, 1, infoNum)
+        images size times { |k|
+            img = images at(k)
+            dict = img _dict
+            (img _mask != nil) ifTrue {
+                dict = dict + " /SMask " + (imageNums get((images indexOf(img _mask)) toString)) toString + " 0 R"
+            }
+            w stream(imageNums get(k toString), img _data, dict)
+        }
+        w finish(last, 1, infoNum)
     }
 
     // The /F<n> name of a standard font, adding it to the document
@@ -226,6 +276,27 @@ Pdf = Object clone {
             i = _fontNames size - 1
         }
         "/F" + (i + 1) toString
+    }
+
+    // The /GS<n> name of a fill and stroke opacity
+    _gsRef(fill, stroke) {
+        key = (Pdf num(fill)) + " " + (Pdf num(stroke))
+        i = _gstates indexOf(key)
+        (i < 0) ifTrue {
+            _gstates push(key)
+            i = _gstates size - 1
+        }
+        "/GS" + (i + 1) toString
+    }
+
+    // The /Im<n> name of an image, adding it to the document
+    _imageRef(img) {
+        i = _images indexOf(img)
+        (i < 0) ifTrue {
+            _images push(img)
+            i = _images size - 1
+        }
+        "/Im" + (i + 1) toString
     }
 
     _pageSize(size) {
@@ -421,6 +492,32 @@ PdfPage = Object clone {
     // "butt", "round" or "square" line ends; "miter", "round" or "bevel" joins
     lineCap(style) { _ops push((self _choice(style, ["butt", "round", "square"])) + " J"); self }
     lineJoin(style) { _ops push((self _choice(style, ["miter", "round", "bevel"])) + " j"); self }
+
+    // Opacity of what is filled (and text) and stroked, 0..1; stroke
+    // defaults to fill. Like colors, it lasts until changed or restore.
+    alpha(fill, stroke = nil) {
+        f = Math max(0, Math min(1, fill))
+        s = (stroke == nil) ifTrue { f } ifFalse { Math max(0, Math min(1, stroke)) }
+        _ops push((_doc _gsRef(f, s)) + " gs")
+        self
+    }
+
+    // An image (from doc png, jpeg, loadImage or image) with its top-left
+    // corner at (x, y), stretched to w x h points (default: one point per
+    // pixel). opts: flipY (draw it upside down)
+    image(img, x, y, w = nil, h = nil, opts = nil) {
+        ((img == nil) || ((img hasMethod("mask")) == false)) ifTrue { raise("Pdf: page image expects an image from doc png, jpeg, loadImage or image") }
+        iw = w ?? img width
+        ih = h ?? img height
+        flip = (opts != nil) && (opts get("flipY") == true)
+        name = _doc _imageRef(img)
+        // image space is a unit square with the first row at the top
+        m = flip ifTrue { (Pdf num(iw)) + " 0 0 " + (Pdf num(0 - ih)) + " " + (Pdf num(x)) + " " + (Pdf num(_h - y)) } ifFalse {
+            (Pdf num(iw)) + " 0 0 " + (Pdf num(ih)) + " " + (Pdf num(x)) + " " + (Pdf num(_h - y - ih))
+        }
+        _ops push("q " + m + " cm " + name + " Do Q")
+        self
+    }
 
     // Save and restore the graphics state (colors, line style, clipping)
     save() { _ops push("q"); self }
@@ -635,9 +732,10 @@ PdfWriter = Object clone {
         self _add(num toString + " 0 obj\n" + body + "\nendobj\n")
     }
 
-    stream(num, data) {
+    stream(num, data, dict = nil) {
         _offsets set(num toString, _size)
-        self _add(num toString + " 0 obj\n<< /Length " + (data length) toString + " >>\nstream\n" +
+        extra = (dict == nil) ifTrue { "" } ifFalse { dict + " " }
+        self _add(num toString + " 0 obj\n<< " + extra + "/Length " + (data length) toString + " >>\nstream\n" +
             data + "\nendstream\nendobj\n")
     }
 
