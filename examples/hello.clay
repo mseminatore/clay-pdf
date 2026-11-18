@@ -1,0 +1,17 @@
+// A one-page demo of the pdf brick: clay examples/hello.clay → hello.pdf
+import("pdf")
+
+doc = Pdf new()
+doc title("Hello, PDF") author("Clay")
+page = doc addPage()
+page font("Helvetica-Bold", 24) text(72, 90, "Hello, PDF from Clay")
+page font("Times-Roman", 12) text(72, 120, "Café, naïve, “quotes” — and (parentheses) \\ backslash, 5 € ")
+page strokeColor("#1f77b4") lineWidth(2) line(72, 135, 540, 135)
+page fillColor(230, 230, 230) fillRect(72, 150, 200, 60)
+page strokeColor(0, 0, 0) lineWidth(1) rect(72, 150, 200, 60)
+page fillColor("#d62728") circle(380, 180, 30, true, false)
+page strokeColor("#2ca02c") dash([4, 2]) polyline([[72, 260], [150, 230], [230, 280], [310, 240]]) dash(nil)
+page fillColor(0, 0, 0) font("Courier", 10) text(60, 400, "rotated 90°", 90)
+doc addPage("A4") font("Helvetica", 14) text(72, 72, "Page 2 (A4)")
+doc save("hello.pdf")
+("wrote hello.pdf, " + (doc pageCount) toString + " pages") println

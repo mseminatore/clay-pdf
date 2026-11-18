@@ -1,0 +1,660 @@
+// pdf -- write PDF files: pages, text in the standard fonts, lines, shapes and paths
+//
+// Usage:
+//   import("pdf")
+//
+//   doc = Pdf new()                        // Letter; Pdf new("A4"), Pdf new([w, h])
+//   doc title("Report") author("Me")
+//   page = doc addPage()
+//   page font("Helvetica-Bold", 18) text(72, 72, "Hello, PDF")
+//   page strokeColor("#1f77b4") lineWidth(2) line(72, 90, 300, 90)
+//   page fillColor(230, 230, 230) fillRect(72, 110, 200, 50)
+//   doc save("hello.pdf")
+//
+// Units are points (1/72 inch). The origin is the page's top-left corner and y
+// grows down, like SVG and screen graphics; a text position is its baseline.
+// Text uses the 14 standard PDF fonts (no embedding); UTF-8 text is mapped to
+// their Windows-1252 character set, and other characters show as "?".
+// Streams are not compressed.
+//
+// Text can be measured (textWidth), wrapped (wrap, paragraph) and aligned
+// (textAlign, textBaseline); doc flow() lays out text top to bottom and starts
+// new pages as needed.
+//
+// Every brick shares one set of top-level names with the program that imports
+// it: this one defines Pdf, PdfPage, PdfFlow, PdfWriter and PdfMetrics.
+
+import("metrics.clay")
+
+Pdf = Object clone {
+    // Page sizes in points
+    _sizes = #{
+        "letter": [612, 792], "legal": [612, 1008], "tabloid": [792, 1224],
+        "a3": [842, 1191], "a4": [595, 842], "a5": [420, 595]
+    }
+
+    // The 14 standard fonts; Symbol and ZapfDingbats have their own encodings
+    _fonts = ["Helvetica", "Helvetica-Bold", "Helvetica-Oblique", "Helvetica-BoldOblique",
+              "Times-Roman", "Times-Bold", "Times-Italic", "Times-BoldItalic",
+              "Courier", "Courier-Bold", "Courier-Oblique", "Courier-BoldOblique",
+              "Symbol", "ZapfDingbats"]
+
+    // Unicode code points of Windows-1252 bytes 128..159 (0: unused)
+    _cp1252 = [8364, 0, 8218, 402, 8222, 8230, 8224, 8225, 710, 8240, 352, 8249, 338, 0, 381, 0,
+               0, 8216, 8217, 8220, 8221, 8226, 8211, 8212, 732, 8482, 353, 8250, 339, 0, 382, 376]
+
+    init(size = "letter") {
+        dims = self _pageSize(size)
+        self _width = dims at(0)
+        self _height = dims at(1)
+        self _pages = []
+        self _fontNames = []     // fonts used, in order: /F1, /F2, ...
+        self _info = #{}
+        self
+    }
+
+    title(s) { _info set("Title", s); self }
+    author(s) { _info set("Author", s); self }
+    subject(s) { _info set("Subject", s); self }
+    creator(s) { _info set("Creator", s); self }
+
+    // A new page, of the document's size unless given ("A4", [w, h])
+    addPage(size = nil) {
+        dims = (size == nil) ifTrue { [_width, _height] } ifFalse { self _pageSize(size) }
+        page = PdfPage new(self, dims at(0), dims at(1))
+        _pages push(page)
+        page
+    }
+
+    pages() { _pages }
+    pageCount() { _pages size }
+
+    // A flow: text laid out from the top of a new page down, starting a new
+    // page whenever the next line would not fit
+    flow(margin = 72) { PdfFlow new(self, margin) }
+
+    // The width of text in points, in one of the standard fonts
+    textWidth(str, font = "Helvetica", size = 12) {
+        widths = Pdf _widths(font)
+        total = 0
+        (Pdf winAnsi(str toString)) each { |b| (b >= 32) ifTrue { total = total + (widths at(b - 32)) } }
+        total * size / 1000.0
+    }
+
+    // How far the font reaches above (ascent) and below (descent, negative)
+    // the baseline, and the height of its capitals, in points
+    ascent(font = "Helvetica", size = 12) { (Pdf _metric(PdfMetrics ascent, font)) * size / 1000.0 }
+    descent(font = "Helvetica", size = 12) { (Pdf _metric(PdfMetrics descent, font)) * size / 1000.0 }
+    capHeight(font = "Helvetica", size = 12) { (Pdf _metric(PdfMetrics capHeight, font)) * size / 1000.0 }
+
+    // Text broken into lines no wider than width: at spaces, or inside a
+    // word that is wider than a line on its own; "\n" always breaks a line
+    wrap(str, width, font = "Helvetica", size = 12) {
+        lines = []
+        space = Pdf textWidth(" ", font, size)
+        ((str toString) split("\n")) each { |para|
+            line = ""
+            lineW = 0
+            (para split(" ")) each { |word|
+                w = Pdf textWidth(word, font, size)
+                (line == "") ifTrue {
+                    line = word
+                    lineW = w
+                } ifFalse {
+                    ((lineW + space + w) <= width) ifTrue {
+                        line = line + " " + word
+                        lineW = lineW + space + w
+                    } ifFalse {
+                        lines push(line)
+                        line = word
+                        lineW = w
+                    }
+                }
+                // a word wider than a line: break it between characters
+                { (lineW > width) && (line length > 1) } whileTrue {
+                    cut = Pdf _fit(line, width, font, size)
+                    lines push(line slice(0, cut))
+                    line = line slice(cut, line length)
+                    lineW = Pdf textWidth(line, font, size)
+                }
+            }
+            lines push(line)
+        }
+        lines
+    }
+
+    // How many bytes of str fit in width, ending on a UTF-8 character boundary
+    // (at least one character)
+    _fit(str, width, font, size) {
+        b = str bytes
+        n = b size
+        cut = 0
+        i = 1
+        { i <= n } whileTrue {
+            boundary = (i == n) || (((b at(i)) & 192) != 128)
+            boundary ifTrue {
+                ((Pdf textWidth(str slice(0, i), font, size)) <= width) ifTrue { cut = i } ifFalse {
+                    (cut == 0) ifTrue { cut = i }
+                    return cut
+                }
+            }
+            i = i + 1
+        }
+        cut
+    }
+
+    _widths(font) {
+        widths = PdfMetrics widths get(font toString)
+        (widths == nil) ifTrue { raise("Pdf: unknown font " + font toString) }
+        widths
+    }
+
+    _metric(table, font) {
+        v = table get(font toString)
+        (v == nil) ifTrue { raise("Pdf: unknown font " + font toString) }
+        v
+    }
+
+    // Write the PDF file
+    save(path) {
+        File write(path, self render)
+        self
+    }
+
+    // The whole PDF file, as a (binary) string
+    render() {
+        (_pages size == 0) ifTrue { self addPage() }
+        w = PdfWriter new()
+        nFonts = _fontNames size
+        nPages = _pages size
+        // object numbers: 1 catalog, 2 page tree, 3 resources, the fonts,
+        // a page and its content stream per page, then the info dictionary
+        fontBase = 4
+        pageBase = fontBase + nFonts
+        infoNum = pageBase + 2 * nPages
+
+        w object(1, "<< /Type /Catalog /Pages 2 0 R >>")
+        kids = []
+        i = 0
+        { i < nPages } whileTrue {
+            kids push((pageBase + 2 * i) toString + " 0 R")
+            i = i + 1
+        }
+        w object(2, "<< /Type /Pages /Kids [" + (kids join(" ")) + "] /Count " + nPages toString + " >>")
+
+        fontRefs = []
+        i = 0
+        { i < nFonts } whileTrue {
+            fontRefs push("/F" + (i + 1) toString + " " + (fontBase + i) toString + " 0 R")
+            i = i + 1
+        }
+        w object(3, "<< /Font << " + (fontRefs join(" ")) + " >> /ProcSet [/PDF /Text] >>")
+        i = 0
+        { i < nFonts } whileTrue {
+            name = _fontNames at(i)
+            symbolic = (name == "Symbol") || (name == "ZapfDingbats")
+            enc = symbolic ifTrue { "" } ifFalse { " /Encoding /WinAnsiEncoding" }
+            w object(fontBase + i, "<< /Type /Font /Subtype /Type1 /BaseFont /" + name + enc + " >>")
+            i = i + 1
+        }
+
+        i = 0
+        { i < nPages } whileTrue {
+            page = _pages at(i)
+            num = pageBase + 2 * i
+            w object(num, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 " + (Pdf num(page width)) + " " +
+                (Pdf num(page height)) + "] /Resources 3 0 R /Contents " + (num + 1) toString + " 0 R >>")
+            w stream(num + 1, page content)
+            i = i + 1
+        }
+
+        entries = []
+        _info keys each { |k| entries push("/" + k + " " + (Pdf string(_info get(k)))) }
+        entries push("/Producer (Clay pdf)")
+        w object(infoNum, "<< " + (entries join(" ")) + " >>")
+        w finish(infoNum, 1, infoNum)
+    }
+
+    // The /F<n> name of a standard font, adding it to the document
+    _fontRef(name) {
+        (_fonts contains(name)) ifFalse {
+            raise("Pdf: unknown font " + name toString + " (use one of the 14 standard fonts, e.g. Helvetica)")
+        }
+        i = _fontNames indexOf(name)
+        (i < 0) ifTrue {
+            _fontNames push(name)
+            i = _fontNames size - 1
+        }
+        "/F" + (i + 1) toString
+    }
+
+    _pageSize(size) {
+        (size type == "Array") ifTrue { return [size at(0), size at(1)] }
+        dims = _sizes get(size toString lower)
+        (dims == nil) ifTrue { raise("Pdf: unknown page size " + size toString) }
+        dims
+    }
+
+    // A number as PDF writes it: at most 3 decimals, never an exponent
+    num(n) {
+        (n type == "Number") ifFalse { raise("Pdf: expected a number, got " + n toString) }
+        scaled = (Math round(n * 1000)) toInt
+        neg = scaled < 0
+        a = scaled abs
+        s = (a / 1000) toString
+        frac = a % 1000
+        (frac > 0) ifTrue {
+            f = frac toString padLeft(3, "0")
+            { f endsWith("0") } whileTrue { f = f slice(0, f length - 1) }
+            s = s + "." + f
+        }
+        (neg && (a > 0)) ifTrue { "-" + s } ifFalse { s }
+    }
+
+    // A PDF string literal "(...)" for UTF-8 text: Windows-1252 bytes, with
+    // ( ) \ escaped and bytes outside printable ASCII written in octal
+    string(text) {
+        out = ["("]
+        (Pdf winAnsi(text toString)) each { |b|
+            ((b == 40) || (b == 41) || (b == 92)) ifTrue {
+                out push("\\" + (String fromBytes([b])))
+            } ifFalse {
+                ((b < 32) || (b > 126)) ifTrue {
+                    out push("\\" + (b / 64) toString + ((b / 8) % 8) toString + (b % 8) toString)
+                } ifFalse {
+                    out push(String fromBytes([b]))
+                }
+            }
+        }
+        out push(")")
+        out join("")
+    }
+
+    // UTF-8 text as Windows-1252 byte values; characters it lacks become "?".
+    // Bytes that are not valid UTF-8 are taken as Windows-1252 already.
+    winAnsi(text) {
+        b = text bytes
+        n = b size
+        out = []
+        i = 0
+        { i < n } whileTrue {
+            c = b at(i)
+            len = 0
+            cp = c
+            ((c >= 192) && (c < 224)) ifTrue { len = 1; cp = c & 31 }
+            ((c >= 224) && (c < 240)) ifTrue { len = 2; cp = c & 15 }
+            ((c >= 240) && (c < 248)) ifTrue { len = 3; cp = c & 7 }
+            ok = (len > 0) && ((i + len) < n)
+            j = 1
+            { ok && (j <= len) } whileTrue {
+                next = b at(i + j)
+                ((next & 192) == 128) ifTrue { cp = (cp << 6) | (next & 63) } ifFalse { ok = false }
+                j = j + 1
+            }
+            ok ifTrue {
+                out push(self _toWinAnsi(cp))
+                i = i + len + 1
+            } ifFalse {
+                out push(c)
+                i = i + 1
+            }
+        }
+        out
+    }
+
+    _toWinAnsi(cp) {
+        ((cp < 128) || ((cp >= 160) && (cp < 256))) ifTrue { return cp }
+        k = _cp1252 indexOf(cp)
+        (k >= 0) ifTrue { 128 + k } ifFalse { 63 }
+    }
+}
+
+// One page: drawing calls append PDF operators to its content stream
+PdfPage = Object clone {
+    init(doc, w, h) {
+        self _doc = doc
+        self _w = w
+        self _h = h
+        self _ops = []
+        self _font = nil       // "/F1 12 Tf" once a font is chosen
+        self _fontName = "Helvetica"
+        self _fontSize = 12
+        self _align = "left"
+        self _baseline = "alphabetic"
+        self
+    }
+
+    width() { _w }
+    height() { _h }
+    content() { _ops join("\n") }
+
+    // The text font: one of the 14 standard fonts, size in points
+    font(name, size = 12) {
+        self _font = (_doc _fontRef(name)) + " " + (Pdf num(size)) + " Tf"
+        self _fontName = name
+        self _fontSize = size
+        self
+    }
+
+    fontName() { _fontName }
+    fontSize() { _fontSize }
+
+    // Measuring and wrapping in the current font (see Pdf textWidth, wrap)
+    textWidth(str) { Pdf textWidth(str, _fontName, _fontSize) }
+    wrap(str, width) { Pdf wrap(str, width, _fontName, _fontSize) }
+
+    // Where text(x, y, ...) puts the text relative to (x, y), like a canvas:
+    // textAlign "left", "center" or "right"; textBaseline "alphabetic" (the
+    // baseline), "top", "middle" (half the capital height) or "bottom"
+    textAlign(a) { self _choice(a, ["left", "center", "right"]); self _align = a; self }
+    textBaseline(b) { self _choice(b, ["alphabetic", "top", "middle", "bottom"]); self _baseline = b; self }
+
+    // Wrapped text in a box width wide whose top is y; align "left", "center"
+    // or "right". Returns the y just below the last line.
+    paragraph(x, y, width, str, align = "left", lineHeight = nil) {
+        self _choice(align, ["left", "center", "right"])
+        (_font == nil) ifTrue { self font("Helvetica", 12) }
+        lh = lineHeight ?? (_fontSize * 1.2)
+        ascent = Pdf ascent(_fontName, _fontSize)
+        lines = self wrap(str, width)
+        i = 0
+        lines each { |line|
+            w = self textWidth(line)
+            dx = (align == "left") ifTrue { 0 } ifFalse { (align == "center") ifTrue { (width - w) / 2 } ifFalse { width - w } }
+            self _text(x + dx, y + ascent + i * lh, line, 0)
+            i = i + 1
+        }
+        y + (lines size) * lh
+    }
+
+    // Text at (x, y): by default its baseline starts there (see textAlign,
+    // textBaseline); angle in degrees, counterclockwise
+    text(x, y, str, angle = 0) {
+        (_font == nil) ifTrue { self font("Helvetica", 12) }
+        dx = 0
+        (_align != "left") ifTrue {
+            w = self textWidth(str)
+            dx = (_align == "center") ifTrue { 0 - w / 2 } ifFalse { 0 - w }
+        }
+        dy = 0
+        (_baseline == "top") ifTrue { dy = Pdf ascent(_fontName, _fontSize) }
+        (_baseline == "middle") ifTrue { dy = (Pdf capHeight(_fontName, _fontSize)) / 2 }
+        (_baseline == "bottom") ifTrue { dy = Pdf descent(_fontName, _fontSize) }
+        ((dx == 0) && (dy == 0)) ifTrue { return self _text(x, y, str, angle) }
+        // the offset turns with the text
+        r = angle * Math pi / 180
+        c = Math cos(r)
+        s = Math sin(r)
+        self _text(x + dx * c + dy * s, y - dx * s + dy * c, str, angle)
+    }
+
+    // Text with its baseline starting at (x, y)
+    _text(x, y, str, angle) {
+        (_font == nil) ifTrue { self font("Helvetica", 12) }
+        py = _h - y
+        (angle == 0) ifTrue {
+            _ops push("BT " + _font + " " + (Pdf num(x)) + " " + (Pdf num(py)) + " Td " + (Pdf string(str)) + " Tj ET")
+        } ifFalse {
+            r = angle * Math pi / 180
+            c = Math cos(r)
+            s = Math sin(r)
+            _ops push("BT " + _font + " " + (Pdf num(c)) + " " + (Pdf num(s)) + " " + (Pdf num(0 - s)) + " " +
+                (Pdf num(c)) + " " + (Pdf num(x)) + " " + (Pdf num(py)) + " Tm " + (Pdf string(str)) + " Tj ET")
+        }
+        self
+    }
+
+    // Colors: r, g, b in 0..255, or a "#rrggbb" string
+    fillColor(r, g = 0, b = 0) { _ops push((self _rgb(r, g, b)) + " rg"); self }
+    strokeColor(r, g = 0, b = 0) { _ops push((self _rgb(r, g, b)) + " RG"); self }
+
+    lineWidth(w) { _ops push((Pdf num(w)) + " w"); self }
+
+    // Dashed lines: dash([on, off, ...]); dash(nil) or dash([]) for solid
+    dash(pattern) {
+        parts = []
+        (pattern ?? []) each { |d| parts push(Pdf num(d)) }
+        _ops push("[" + (parts join(" ")) + "] 0 d")
+        self
+    }
+
+    // "butt", "round" or "square" line ends; "miter", "round" or "bevel" joins
+    lineCap(style) { _ops push((self _choice(style, ["butt", "round", "square"])) + " J"); self }
+    lineJoin(style) { _ops push((self _choice(style, ["miter", "round", "bevel"])) + " j"); self }
+
+    // Save and restore the graphics state (colors, line style, clipping)
+    save() { _ops push("q"); self }
+    restore() { _ops push("Q"); self }
+
+    // Clip later drawing to a rectangle (until restore)
+    clipRect(x, y, w, h) { _ops push((self _rect(x, y, w, h)) + " re W n"); self }
+
+    line(x1, y1, x2, y2) {
+        _ops push((self _pt(x1, y1)) + " m " + (self _pt(x2, y2)) + " l S")
+        self
+    }
+
+    // A polyline through [[x, y], ...]
+    polyline(points) {
+        self _path(points)
+        _ops push("S")
+        self
+    }
+
+    // A closed polygon through [[x, y], ...]: filled and/or stroked
+    polygon(points, fill = true, stroke = false) {
+        self _path(points)
+        _ops push(self _paint(fill, stroke))
+        self
+    }
+
+    rect(x, y, w, h) { _ops push((self _rect(x, y, w, h)) + " re S"); self }
+    fillRect(x, y, w, h) { _ops push((self _rect(x, y, w, h)) + " re f"); self }
+
+    circle(cx, cy, r, fill = false, stroke = true) { self ellipse(cx, cy, r, r, fill, stroke) }
+
+    ellipse(cx, cy, rx, ry, fill = false, stroke = true) {
+        k = 0.5523   // four Bezier quarter-arcs
+        self moveTo(cx + rx, cy)
+        self curveTo(cx + rx, cy - k * ry, cx + k * rx, cy - ry, cx, cy - ry)
+        self curveTo(cx - k * rx, cy - ry, cx - rx, cy - k * ry, cx - rx, cy)
+        self curveTo(cx - rx, cy + k * ry, cx - k * rx, cy + ry, cx, cy + ry)
+        self curveTo(cx + k * rx, cy + ry, cx + rx, cy + k * ry, cx + rx, cy)
+        _ops push(self _paint(fill, stroke))
+        self
+    }
+
+    // Paths: moveTo, lineTo, curveTo (cubic Bezier), closePath, then
+    // stroke, fill or fillStroke
+    moveTo(x, y) { _ops push((self _pt(x, y)) + " m"); self }
+    lineTo(x, y) { _ops push((self _pt(x, y)) + " l"); self }
+    curveTo(x1, y1, x2, y2, x, y) {
+        _ops push((self _pt(x1, y1)) + " " + (self _pt(x2, y2)) + " " + (self _pt(x, y)) + " c")
+        self
+    }
+    closePath() { _ops push("h"); self }
+    stroke() { _ops push("S"); self }
+    fill() { _ops push("f"); self }
+    fillStroke() { _ops push("B"); self }
+
+    // Raw content-stream operators (PDF coordinates: origin bottom-left)
+    raw(ops) { _ops push(ops); self }
+
+    // Close the path and paint it
+    _paint(fill, stroke) {
+        (fill && stroke) ifTrue { return "b" }
+        fill ifTrue { return "f" }
+        stroke ifTrue { return "s" }
+        "n"
+    }
+
+    _path(points) {
+        (points size == 0) ifTrue { return self }
+        p = points at(0)
+        self moveTo(p at(0), p at(1))
+        i = 1
+        { i < points size } whileTrue {
+            p = points at(i)
+            self lineTo(p at(0), p at(1))
+            i = i + 1
+        }
+        self
+    }
+
+    _choice(style, names) {
+        i = names indexOf(style)
+        (i < 0) ifTrue { raise("Pdf: expected one of " + (names join(", ")) + ", got " + style toString) }
+        i toString
+    }
+
+    _pt(x, y) { (Pdf num(x)) + " " + (Pdf num(_h - y)) }
+
+    _rect(x, y, w, h) { (Pdf num(x)) + " " + (Pdf num(_h - y - h)) + " " + (Pdf num(w)) + " " + (Pdf num(h)) }
+
+    _rgb(r, g, b) {
+        (r type == "String") ifTrue {
+            v = self _hex(r)
+            return self _rgb(v >> 16, (v >> 8) & 255, v & 255)
+        }
+        (Pdf num(r / 255.0)) + " " + (Pdf num(g / 255.0)) + " " + (Pdf num(b / 255.0))
+    }
+
+    // "#rrggbb" as an integer
+    _hex(s) {
+        h = (s startsWith("#")) ifTrue { s slice(1, s length) } ifFalse { s }
+        (h length == 6) ifFalse { raise("Pdf: bad color " + s) }
+        v = 0
+        (h lower bytes) each { |c|
+            d = ((c >= 48) && (c <= 57)) ifTrue { c - 48 } ifFalse {
+                ((c >= 97) && (c <= 102)) ifTrue { c - 87 } ifFalse { raise("Pdf: bad color " + s) }
+            }
+            v = v * 16 + d
+        }
+        v
+    }
+}
+
+// Text laid out from the top of the page down, within margins; a line that
+// would cross the bottom margin goes on a new page. Fonts and colors carry
+// over to new pages.
+PdfFlow = Object clone {
+    init(doc, margin) {
+        self _doc = doc
+        self _margin = margin
+        self _page = nil
+        self _y = 0
+        self _fontName = "Helvetica"
+        self _fontSize = 12
+        self _color = nil
+        self _lineHeight = nil
+        self newPage()
+        self
+    }
+
+    page() { _page }
+    y() { _y }
+    x() { _margin }
+    width() { _page width - 2 * _margin }
+    bottom() { _page height - _margin }
+
+    // Start a new page; drawing continues at its top margin
+    newPage() {
+        self _page = _doc addPage()
+        self _y = _margin
+        self
+    }
+
+    font(name, size = 12) {
+        Pdf textWidth("", name, size)     // raises on an unknown font
+        self _fontName = name
+        self _fontSize = size
+        self
+    }
+
+    // Text color: r, g, b in 0..255, or "#rrggbb"; nil for black
+    color(r, g = 0, b = 0) {
+        self _color = (r == nil) ifTrue { nil } ifFalse { [r, g, b] }
+        self
+    }
+
+    // Line spacing in points (default 1.2 times the font size)
+    lineHeight(h) { self _lineHeight = h; self }
+
+    // Wrapped text; align "left", "center" or "right"
+    paragraph(str, align = "left") {
+        lh = _lineHeight ?? (_fontSize * 1.2)
+        (Pdf wrap(str, self width, _fontName, _fontSize)) each { |line|
+            ((_y + lh) > self bottom) ifTrue { self newPage() }
+            self _style
+            _page paragraph(_margin, _y, self width, line, align, lh)
+            self _y = _y + lh
+        }
+        self
+    }
+
+    // Vertical space (it does not carry over to a new page)
+    space(h) {
+        self _y = _y + h
+        self
+    }
+
+    // Make room for something h tall (a figure): a new page if it would not
+    // fit. Returns the page; draw at (x, y), then advance(h).
+    ensure(h) {
+        ((_y + h) > self bottom) ifTrue { self newPage() }
+        _page
+    }
+
+    advance(h) { self space(h) }
+
+    _style() {
+        _page font(_fontName, _fontSize)
+        c = _color ?? [0, 0, 0]
+        _page fillColor(c at(0), c at(1), c at(2))
+    }
+}
+
+// Writes numbered objects, recording each one's byte offset for the xref table
+PdfWriter = Object clone {
+    init() {
+        // the second line's bytes above 127 mark the file as binary
+        header = "%PDF-1.7\n%" + (String fromBytes([226, 227, 207, 211])) + "\n"
+        self _parts = [header]
+        self _size = header length
+        self _offsets = #{}
+        self
+    }
+
+    _add(s) {
+        _parts push(s)
+        self _size = _size + s length
+    }
+
+    object(num, body) {
+        _offsets set(num toString, _size)
+        self _add(num toString + " 0 obj\n" + body + "\nendobj\n")
+    }
+
+    stream(num, data) {
+        _offsets set(num toString, _size)
+        self _add(num toString + " 0 obj\n<< /Length " + (data length) toString + " >>\nstream\n" +
+            data + "\nendstream\nendobj\n")
+    }
+
+    // The xref table and trailer (count: the highest object number); the file
+    finish(count, root, info) {
+        xrefAt = _size
+        lines = ["xref\n0 " + (count + 1) toString + "\n0000000000 65535 f \n"]
+        i = 1
+        { i <= count } whileTrue {
+            off = _offsets get(i toString)
+            (off == nil) ifTrue { raise("Pdf: object " + i toString + " was not written") }
+            lines push(off toString padLeft(10, "0") + " 00000 n \n")
+            i = i + 1
+        }
+        lines push("trailer\n<< /Size " + (count + 1) toString + " /Root " + root toString + " 0 R /Info " +
+            info toString + " 0 R >>\nstartxref\n" + xrefAt toString + "\n%%EOF\n")
+        self _add(lines join(""))
+        _parts join("")
+    }
+}

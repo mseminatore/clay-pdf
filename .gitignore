@@ -1,0 +1,5 @@
+# bricks installed by `clay bricks install`
+bricks/
+
+# output of the examples and tests
+*.pdf

@@ -1,0 +1,257 @@
+// Tests for the pdf brick. Run them from the brick's directory:
+//   clay tests/test_pdf.clay
+// (a brick can be imported by its own name from inside its own directory)
+// They use stdlib/test, which comes with Clay: `Test run` prints a summary
+// and exits with status 1 if any test failed.
+import("pdf")
+import("stdlib/test")
+
+// Structural checks a PDF reader relies on: the header, startxref pointing
+// at the xref table, every xref entry pointing at "<n> 0 obj", and each
+// stream's /Length matching its data.
+Check = Object clone {
+    // Returns the number of objects
+    structure(pdf) {
+        Test assertTrue(pdf startsWith("%PDF-1.7\n"))
+        Test assertTrue(pdf endsWith("%%EOF\n"))
+        tail = pdf slice(pdf lastIndexOf("startxref\n") + 10, pdf length)
+        xrefAt = ((tail split("\n")) at(0)) toInt
+        Test assertEqual(pdf slice(xrefAt, xrefAt + 5), "xref\n")
+        lines = (pdf slice(xrefAt, pdf length)) split("\n")
+        count = (((lines at(1)) split(" ")) at(1)) toInt
+        Test assertEqual(lines at(2), "0000000000 65535 f ")
+        i = 1
+        { i < count } whileTrue {
+            entry = lines at(2 + i)
+            Test assertEqual(entry length, 19)       // 20 bytes with the "\n"
+            off = (entry slice(0, 10)) toInt
+            head = i toString + " 0 obj\n"
+            Test assertEqual(pdf slice(off, off + head length), head)
+            i = i + 1
+        }
+        rest = pdf
+        at = rest indexOf("/Length ")
+        { at >= 0 } whileTrue {
+            rest = rest slice(at + 8, rest length)
+            len = ((rest split(" ")) at(0)) toInt
+            start = (rest indexOf("stream\n")) + 7
+            Test assertEqual(rest slice(start + len, start + len + 10), "\nendstream")
+            at = rest indexOf("/Length ")
+        }
+        count - 1
+    }
+}
+
+Test describe("numbers") {
+    Test it("writes integers and up to 3 decimals") {
+        Test assertEqual(Pdf num(72), "72")
+        Test assertEqual(Pdf num(0), "0")
+        Test assertEqual(Pdf num(1.5), "1.5")
+        Test assertEqual(Pdf num(0.1234), "0.123")
+        Test assertEqual(Pdf num(-2.25), "-2.25")
+        Test assertEqual(Pdf num(612.0), "612")
+    }
+    Test it("never writes an exponent") {
+        Test assertEqual(Pdf num(0.0000001), "0")
+        Test assertEqual(Pdf num(-0.0000001), "0")
+        Test assertEqual(Pdf num(1000000), "1000000")
+    }
+    Test it("raises on a non-number") {
+        Test assertRaises({ Pdf num("12") })
+    }
+}
+
+Test describe("strings") {
+    Test it("escapes parentheses and backslashes") {
+        Test assertEqual(Pdf string("a(b)c\\d"), "(a\\(b\\)c\\\\d)")
+    }
+    Test it("maps UTF-8 to Windows-1252") {
+        Test assertEqual(Pdf string("Café"), "(Caf\\351)")
+        Test assertEqual(Pdf string("5 €"), "(5 \\200)")
+        Test assertEqual(Pdf string("“hi” — ok"), "(\\223hi\\224 \\227 ok)")
+        Test assertEqual(Pdf winAnsi("é"), [233])
+    }
+    Test it("writes characters it lacks as ?") {
+        Test assertEqual(Pdf string("π≠∞"), "(???)")
+        Test assertEqual(Pdf string("😀"), "(?)")
+    }
+    Test it("keeps bytes that are not UTF-8") {
+        Test assertEqual(Pdf winAnsi(String fromBytes([72, 233, 33])), [72, 233, 33])
+    }
+    Test it("writes control characters in octal") {
+        Test assertEqual(Pdf string("a\nb"), "(a\\012b)")
+    }
+}
+
+Test describe("documents") {
+    Test it("renders an empty document as one blank page") {
+        pdf = Pdf new() render
+        // catalog, page tree, resources, page, contents, info
+        Test assertEqual(Check structure(pdf), 6)
+        Test assertTrue(pdf contains("/Count 1"))
+        Test assertTrue(pdf contains("/MediaBox [0 0 612 792]"))
+    }
+    Test it("has a valid structure with text, shapes and several pages") {
+        doc = Pdf new("A4") title("T") author("A (me)")
+        p = doc addPage()
+        p font("Helvetica-Bold", 18) text(72, 72, "Hello") font("Times-Roman") text(72, 100, "Café (x)")
+        p strokeColor("#1f77b4") lineWidth(2) line(0, 0, 100, 100) rect(10, 10, 50, 20)
+        p fillColor(255, 0, 0) circle(200, 200, 30, true, true)
+        p polygon([[0, 0], [10, 0], [5, 8]]) dash([3, 1]) polyline([[0, 0], [5, 5]])
+        doc addPage("letter") text(10, 20, "page 2")
+        pdf = doc render
+        Check structure(pdf)
+        Test assertTrue(pdf contains("/Count 2"))
+        Test assertTrue(pdf contains("/MediaBox [0 0 595 842]"))
+        Test assertTrue(pdf contains("/MediaBox [0 0 612 792]"))
+        Test assertTrue(pdf contains("/Title (T)"))
+        Test assertTrue(pdf contains("/Author (A \\(me\\))"))
+    }
+    Test it("declares each font once") {
+        doc = Pdf new()
+        doc addPage() font("Courier") text(1, 1, "a") font("Courier") text(1, 2, "b")
+        doc addPage() font("Courier") text(1, 1, "c") font("Symbol") text(1, 2, "d")
+        pdf = doc render
+        Check structure(pdf)
+        Test assertTrue(pdf contains("/F1 4 0 R /F2 5 0 R >>"))
+        Test assertTrue(pdf contains("/BaseFont /Symbol >>"))       // no WinAnsi encoding
+        Test assertTrue(pdf contains("/BaseFont /Courier /Encoding /WinAnsiEncoding"))
+    }
+    Test it("saves a file") {
+        path = File tempDir + "/clay_pdf_test.pdf"
+        Pdf new() save(path)
+        Test assertTrue((File read(path)) startsWith("%PDF-"))
+        File delete(path)
+    }
+}
+
+Test describe("pages") {
+    Test it("flips y so the origin is the top-left corner") {
+        p = Pdf new() addPage()
+        p line(10, 20, 30, 40)
+        Test assertEqual(p content, "10 772 m 30 752 l S")
+        p2 = Pdf new() addPage()
+        p2 fillRect(10, 20, 100, 50)
+        Test assertEqual(p2 content, "10 722 100 50 re f")
+    }
+    Test it("places text at its baseline, optionally rotated") {
+        p = Pdf new() addPage()
+        p text(72, 100, "x")
+        Test assertEqual(p content, "BT /F1 12 Tf 72 692 Td (x) Tj ET")
+        p2 = Pdf new() addPage()
+        p2 font("Helvetica", 10) text(50, 100, "y", 90)
+        Test assertEqual(p2 content, "BT /F1 10 Tf 0 1 -1 0 50 692 Tm (y) Tj ET")
+    }
+    Test it("takes colors as 0..255 or #rrggbb") {
+        p = Pdf new() addPage()
+        p fillColor(255, 0, 0) strokeColor("#00FF80")
+        Test assertEqual(p content, "1 0 0 rg\n0 1 0.502 RG")
+        Test assertRaises({ p fillColor("#12345") })
+        Test assertRaises({ p fillColor("#12345g") })
+    }
+    Test it("supports line styles, clipping and raw operators") {
+        p = Pdf new() addPage()
+        p save clipRect(0, 0, 10, 10) lineCap("round") lineJoin("bevel") dash([2, 1]) dash(nil) raw("0.5 g") restore
+        Test assertEqual(p content, "q\n0 782 10 10 re W n\n1 J\n2 j\n[2 1] 0 d\n[] 0 d\n0.5 g\nQ")
+        Test assertRaises({ p lineCap("pointy") })
+    }
+    Test it("raises on unknown fonts and page sizes") {
+        Test assertRaises({ Pdf new() addPage() font("Arial") })
+        Test assertRaises({ Pdf new("B9") })
+        Test assertEqual((Pdf new([300, 400]) addPage()) height, 400)
+    }
+}
+
+Test describe("measuring") {
+    Test it("measures text in the standard fonts") {
+        // Helvetica H e l l o = 722 + 556 + 222 + 222 + 556
+        Test assertEqual(Pdf textWidth("Hello", "Helvetica", 12), 2278 * 12 / 1000.0)
+        Test assertEqual(Pdf textWidth("iiii", "Courier", 10), 24)
+        Test assertEqual(Pdf textWidth("", "Times-Roman", 12), 0)
+        Test assertTrue((Pdf textWidth("W", "Times-Bold")) > (Pdf textWidth("W", "Times-Roman")))
+    }
+    Test it("measures Windows-1252 characters from UTF-8") {
+        Test assertEqual(Pdf textWidth("é", "Helvetica", 1000), 556)
+        Test assertEqual(Pdf textWidth("€", "Helvetica", 1000), 556)
+        Test assertEqual(Pdf textWidth("—", "Times-Roman", 1000), 1000)
+    }
+    Test it("gives font heights") {
+        Test assertEqual(Pdf ascent("Helvetica", 10), 7.18)
+        Test assertEqual(Pdf descent("Times-Roman", 10), -2.17)
+        Test assertEqual(Pdf capHeight("Helvetica", 1000), 718)
+    }
+    Test it("raises on an unknown font") {
+        Test assertRaises({ Pdf textWidth("x", "Arial") })
+    }
+}
+
+Test describe("wrapping") {
+    Test it("breaks at spaces") {
+        // each "aaaa" is 4 * 600 * 10 / 1000 = 24 points in Courier 10; a space is 6
+        Test assertEqual(Pdf wrap("aaaa aaaa aaaa", 54, "Courier", 10), ["aaaa aaaa", "aaaa"])
+        Test assertEqual(Pdf wrap("aaaa aaaa aaaa", 53.9, "Courier", 10), ["aaaa", "aaaa", "aaaa"])
+        Test assertEqual(Pdf wrap("short", 500), ["short"])
+    }
+    Test it("keeps hard line breaks and empty lines") {
+        Test assertEqual(Pdf wrap("a\n\nb", 500), ["a", "", "b"])
+    }
+    Test it("breaks a word wider than a line") {
+        Test assertEqual(Pdf wrap("aaaaaaa bb", 24, "Courier", 10), ["aaaa", "aaa", "bb"])
+    }
+    Test it("breaks between characters, not inside one") {
+        lines = Pdf wrap("ééééé", 12, "Courier", 10)
+        Test assertEqual(lines, ["éé", "éé", "é"])
+    }
+}
+
+Test describe("layout") {
+    Test it("aligns text around its point") {
+        p = Pdf new() addPage()
+        p font("Courier", 10) textAlign("center") text(100, 100, "aaaa")      // 24 wide
+        Test assertEqual(p content, "BT /F1 10 Tf 88 692 Td (aaaa) Tj ET")
+        p2 = Pdf new() addPage()
+        p2 font("Courier", 10) textAlign("right") textBaseline("top") text(100, 100, "aaaa")
+        // ascent of Courier is 629 / 1000 em: the baseline is 6.29 below the top
+        Test assertEqual(p2 content, "BT /F1 10 Tf 76 685.71 Td (aaaa) Tj ET")
+        Test assertRaises({ p textAlign("middle") })
+        Test assertRaises({ p textBaseline("center") })
+    }
+    Test it("turns the alignment offset with the text") {
+        p = Pdf new() addPage()
+        p font("Courier", 10) textAlign("center") text(100, 100, "aaaa", 90)
+        // centered along the rotated baseline: 12 points back down the page
+        Test assertEqual(p content, "BT /F1 10 Tf 0 1 -1 0 100 680 Tm (aaaa) Tj ET")
+    }
+    Test it("lays out a paragraph and returns the y below it") {
+        p = Pdf new() addPage()
+        p font("Courier", 10)
+        y = p paragraph(72, 100, 54, "aaaa aaaa aaaa", "left", 12)
+        Test assertEqual(y, 124)
+        Test assertTrue(p content contains("(aaaa aaaa)"))
+        p2 = Pdf new() addPage()
+        p2 font("Courier", 10) paragraph(0, 0, 54, "aaaa", "right")
+        Test assertTrue(p2 content contains(" 30 "))       // 54 - 24
+    }
+    Test it("flows onto new pages") {
+        doc = Pdf new([200, 200])
+        f = doc flow(20)
+        f font("Helvetica", 10) lineHeight(12)
+        20 times { |i| f paragraph("line " + i toString) }
+        // 160 points of room fit 13 lines of 12
+        Test assertEqual(doc pageCount, 2)
+        Test assertTrue(doc pages at(1) content contains("(line 13)"))
+        Test assertEqual(f y, 20 + 7 * 12)
+        Check structure(doc render)
+    }
+    Test it("starts a new page for a figure that does not fit") {
+        doc = Pdf new([200, 200])
+        f = doc flow(20)
+        f space(100)
+        page = f ensure(80)
+        Test assertEqual(doc pageCount, 2)
+        Test assertEqual(page, doc pages at(1))
+        Test assertEqual(f y, 20)
+    }
+}
+
+Test run

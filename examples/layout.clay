@@ -1,0 +1,29 @@
+// Text layout with the pdf brick: clay examples/layout.clay → layout.pdf
+import("pdf")
+
+lorem = "Clay is a prototype-based, pure object-oriented language: everything is an object, objects talk by sending messages, and new objects are made by cloning existing ones. It compiles to readable C for native binaries, or to bytecode for its embedded virtual machine. "
+
+doc = Pdf new() title("Layout demo")
+f = doc flow(72)
+f font("Helvetica-Bold", 20) paragraph("Text layout", "center") space(6)
+f font("Times-Roman", 11)
+f paragraph(lorem + lorem)
+f space(8) font("Times-Italic", 11) color("#555555") paragraph("A centered, italic paragraph in gray. " + lorem, "center")
+f space(8) font("Courier", 9) color(nil) paragraph("Averyveryveryveryveryveryveryveryveryveryveryveryveryveryveryveryverylongwordthatmustbreak and then normal words.\nA hard line break.", "right")
+
+// a "figure" with labels placed by alignment, like a plot axis
+page = f ensure(160)
+x0 = f x
+y0 = f y
+page strokeColor(0, 0, 0) lineWidth(0.8) rect(x0 + 40, y0, 300, 120)
+page font("Helvetica", 9) textAlign("center") textBaseline("top")
+[0, 1, 2, 3] each { |i| page text(x0 + 40 + i * 100, y0 + 124, (i * 10) toString) }
+page textAlign("right") textBaseline("middle")
+[0, 1, 2] each { |i| page text(x0 + 36, y0 + 120 - i * 60, (i * 0.5) toString) }
+page textAlign("center") textBaseline("bottom") text(x0 + 16, y0 + 60, "value", 90)
+page textAlign("left") textBaseline("alphabetic")
+f advance(160)
+
+30 times { |i| f font("Helvetica", 11) paragraph("Line " + (i + 1) toString + ": the flow starts a new page when the next line does not fit.") }
+doc save("layout.pdf")
+("wrote layout.pdf, " + (doc pageCount) toString + " pages") println
