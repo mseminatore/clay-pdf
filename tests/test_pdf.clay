@@ -335,7 +335,8 @@ Test describe("rich text") {
         // the space after "Some" keeps its style; "bold," stays one word across runs
         Test assertEqual(first map { |p| p at(0) }, ["Some ", "bold", ", then"])
         Test assertEqual(first map { |p| p at(1) }, ["Helvetica", "Helvetica-Bold", "Helvetica"])
-        Test assertEqual((lines at(1) at(0)) first, ["code() ", "Courier", "#aa0000"])
+        // the space after "code()" is in a Helvetica run, so it is Helvetica
+        Test assertEqual((lines at(1) at(0)) map { |p| [p at(0), p at(1)] }, [["code()", "Courier"], [" and more", "Helvetica"]])
         lines each { |l| Test assertTrue((l at(1)) <= 100) }
         w = Pdf textWidth("Some ", "Helvetica", 12) + Pdf textWidth("bold", "Helvetica-Bold", 12) + Pdf textWidth(", then", "Helvetica", 12)
         Test assertEqual(Math round((lines first at(1)) * 1000), Math round(w * 1000))

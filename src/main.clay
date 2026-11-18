@@ -145,11 +145,12 @@ Pdf = Object clone {
     // nil for black. Each line is [pieces, width], its pieces runs again
     // (adjacent ones in the same style merged), to draw with page runs.
     wrapRuns(runs, width, size = 12) {
-        // words: [fragments, spaceBefore], a fragment [text, font, color]
+        // words: [fragments, space], a fragment [text, font, color], space
+        // the style ([font, color]) of the space before the word, or nil
         words = []
         frags = []
-        spaced = false
-        pending = false
+        spaced = nil
+        pending = nil
         runs each { |run|
             font = run at(1)
             color = (run size > 2) ifTrue { run at(2) } ifFalse { nil }
@@ -157,11 +158,11 @@ Pdf = Object clone {
             j = 0
             parts each { |part|
                 (j > 0) ifTrue {
-                    (frags size > 0) ifTrue { words push([frags, spaced]); frags = []; spaced = false }
-                    pending = true
+                    (frags size > 0) ifTrue { words push([frags, spaced]); frags = []; spaced = nil }
+                    pending = [font, color]
                 }
                 (part != "") ifTrue {
-                    (frags size == 0) ifTrue { spaced = pending; pending = false }
+                    (frags size == 0) ifTrue { spaced = pending; pending = nil }
                     frags push([part, font, color])
                 }
                 j = j + 1
@@ -176,16 +177,16 @@ Pdf = Object clone {
             fr = word at(0)
             w = 0
             fr each { |f| w = w + Pdf textWidth(f at(0), f at(1), size) }
-            // a space between words takes the style of the text before it
-            prev = (line size > 0) ifTrue { line at(line size - 1) } ifFalse { nil }
-            gap = ((prev != nil) && (word at(1))) ifTrue { Pdf textWidth(" ", prev at(1), size) } ifFalse { 0 }
+            // a space between words keeps the style of the run it is in
+            sp = word at(1)
+            gap = ((line size > 0) && (sp != nil)) ifTrue { Pdf textWidth(" ", sp at(0), size) } ifFalse { 0 }
             ((line size > 0) && ((lineW + gap + w) > width)) ifTrue {
                 lines push([line, lineW])
                 line = []
                 lineW = 0
                 gap = 0
             }
-            (gap > 0) ifTrue { line = Pdf _addPiece(line, [" ", prev at(1), prev at(2)]) }
+            (gap > 0) ifTrue { line = Pdf _addPiece(line, [" ", sp at(0), sp at(1)]) }
             fr each { |f| line = Pdf _addPiece(line, f) }
             lineW = lineW + gap + w
         }

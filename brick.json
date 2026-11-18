@@ -1,6 +1,6 @@
 {
   "name": "pdf",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "clay": ">=0.3.7",
   "description": "Write PDF files: pages, text in the 14 standard fonts, lines, shapes and paths",
   "main": "src/main.clay",
