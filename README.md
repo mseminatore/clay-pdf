@@ -57,7 +57,7 @@ position is the start of its baseline.
 | `Pdf textWidth(str, font, size)` | Width in points |
 | `Pdf ascent(font, size)`, `descent(...)`, `capHeight(...)` | Heights in points (descent is negative) |
 | `Pdf wrap(str, width, font, size)` | Lines no wider than width: breaks at spaces, inside over-long words, and at `"\n"` |
-| `Pdf wrapRuns(runs, width, size)` | Rich text -- runs `[text, font]` or `[text, font, "#rrggbb"]` -- broken into lines at spaces (a word may span runs); each line is `[pieces, width]` for `page runs` |
+| `Pdf wrapRuns(runs, width, size)` | Rich text -- runs `[text, font]` or `[text, font, "#rrggbb"]` -- broken into lines at spaces (a word may span runs); each line is `[pieces, width]` for `page runs`. A run's fourth element, `#{scale: 0.7, rise: 0.4}`, makes it smaller and raises it (in ems of the size; negative lowers it), for super- and subscripts |
 | `loadImage(path)` | A `.png`, `.jpg` or `.jpeg` file as an image to draw |
 | `png(bytes)`, `jpeg(bytes)` | The same from a file's bytes |
 | `image(w, h, channels, pixels)` | From 8-bit pixels, row by row: 1 gray, 2 gray + alpha, 3 RGB, 4 RGBA |

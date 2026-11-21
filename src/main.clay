@@ -142,11 +142,14 @@ Pdf = Object clone {
     // Rich text -- runs in several fonts and colors -- broken into lines no
     // wider than width, at spaces (a word may span runs, as in "**bold**,").
     // A run is [text, font] or [text, font, color]; color is "#rrggbb", or
-    // nil for black. Each line is [pieces, width], its pieces runs again
+    // nil for black. A fourth element, a Dict, can size and raise it: scale
+    // (of the size, e.g. 0.7 for a superscript) and rise (up from the
+    // baseline, in ems of the size; below it if negative); other keys are
+    // kept, unused. Each line is [pieces, width], its pieces runs again
     // (adjacent ones in the same style merged), to draw with page runs.
     wrapRuns(runs, width, size = 12) {
-        // words: [fragments, space], a fragment [text, font, color], space
-        // the style ([font, color]) of the space before the word, or nil
+        // words: [fragments, space], a fragment [text, font, color] (and its
+        // options), space the style ([font, color]) of the space before the word, or nil
         words = []
         frags = []
         spaced = nil
@@ -154,6 +157,7 @@ Pdf = Object clone {
         runs each { |run|
             font = run at(1)
             color = (run size > 2) ifTrue { run at(2) } ifFalse { nil }
+            opts = (run size > 3) ifTrue { run at(3) } ifFalse { nil }
             parts = ((run at(0)) toString replace("\n", " ")) split(" ")
             j = 0
             parts each { |part|
@@ -163,7 +167,7 @@ Pdf = Object clone {
                 }
                 (part != "") ifTrue {
                     (frags size == 0) ifTrue { spaced = pending; pending = nil }
-                    frags push([part, font, color])
+                    frags push((opts == nil) ifTrue { [part, font, color] } ifFalse { [part, font, color, opts] })
                 }
                 j = j + 1
             }
@@ -176,7 +180,7 @@ Pdf = Object clone {
         words each { |word|
             fr = word at(0)
             w = 0
-            fr each { |f| w = w + Pdf textWidth(f at(0), f at(1), size) }
+            fr each { |f| w = w + Pdf _pieceWidth(f, size) }
             // a space between words keeps the style of the run it is in
             sp = word at(1)
             gap = ((line size > 0) && (sp != nil)) ifTrue { Pdf textWidth(" ", sp at(0), size) } ifFalse { 0 }
@@ -198,14 +202,30 @@ Pdf = Object clone {
     _addPiece(line, piece) {
         (line size > 0) ifTrue {
             last = line at(line size - 1)
-            ((last at(1) == piece at(1)) && (last at(2) == piece at(2))) ifTrue {
-                line setAt(line size - 1, [(last at(0)) + (piece at(0)), last at(1), last at(2)])
+            ((last at(1) == piece at(1)) && (last at(2) == piece at(2)) && (Pdf _sameShift(last, piece))) ifTrue {
+                joined = [(last at(0)) + (piece at(0)), last at(1), last at(2)]
+                (last size > 3) ifTrue { joined push(last at(3)) }
+                line setAt(line size - 1, joined)
                 return line
             }
         }
         line push(piece)
         line
     }
+
+    // A run's scale and rise (1 and 0 without options)
+    _scale(piece) {
+        o = (piece size > 3) ifTrue { piece at(3) } ifFalse { nil }
+        (o == nil) ifTrue { 1 } ifFalse { (o get("scale")) ?? 1 }
+    }
+    _rise(piece) {
+        o = (piece size > 3) ifTrue { piece at(3) } ifFalse { nil }
+        (o == nil) ifTrue { 0 } ifFalse { (o get("rise")) ?? 0 }
+    }
+    _sameShift(a, b) { ((Pdf _scale(a)) == (Pdf _scale(b))) && ((Pdf _rise(a)) == (Pdf _rise(b))) }
+
+    // A piece's width at size, its scale applied
+    _pieceWidth(piece, size) { Pdf textWidth(piece at(0), piece at(1), size * (Pdf _scale(piece))) }
 
     // How many bytes of str fit in width, ending on a UTF-8 character boundary
     // (at least one character)
@@ -488,11 +508,12 @@ PdfPage = Object clone {
     runs(x, y, pieces, size = 12) {
         cx = x
         pieces each { |p|
-            self font(p at(1), size)
+            sz = size * (Pdf _scale(p))
+            self font(p at(1), sz)
             c = (p size > 2) ifTrue { p at(2) } ifFalse { nil }
             self fillColor(c ?? "#000000")
-            self _text(cx, y, p at(0), 0)
-            cx = cx + Pdf textWidth(p at(0), p at(1), size)
+            self _text(cx, y - ((Pdf _rise(p)) * size), p at(0), 0)
+            cx = cx + Pdf textWidth(p at(0), p at(1), sz)
         }
         cx - x
     }

@@ -360,6 +360,21 @@ Test describe("rich text") {
         Test assertEqual(flow y, y0 + 14.4)
         Check structure(doc render)
     }
+    Test it("sizes and raises runs for scripts") {
+        sup = #{scale: 0.5, rise: 0.4}
+        lines = Pdf wrapRuns([["x", "Helvetica"], ["2", "Helvetica", nil, sup], ["3", "Helvetica", nil, sup], [" y", "Helvetica"]], 500, 10)
+        pieces = lines first at(0)
+        Test assertEqual(pieces map { |p| p at(0) }, ["x", "23", " y"])    // same shift: merged
+        Test assertEqual((pieces at(1)) at(3), sup)
+        Test assertEqual(pieces first size, 3)                           // plain runs stay three long
+        w = Pdf textWidth("x y", "Helvetica", 10) + Pdf textWidth("23", "Helvetica", 5)
+        Test assertEqual(Math round((lines first at(1)) * 1000), Math round(w * 1000))
+        doc = Pdf new()
+        page = doc addPage()
+        page runs(72, 100, pieces, 10)
+        Test assertTrue(page content contains("/F1 5 Tf"))              // half the size
+        Test assertTrue(page content contains(" 696 Td (23) Tj"))        // 0.4 em above the baseline (792 - 100 + 4)
+    }
 }
 
 Test run
