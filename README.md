@@ -50,6 +50,8 @@ position is the start of its baseline.
 | `Pdf new(size = "letter")` | `"letter"`, `"legal"`, `"tabloid"`, `"a3"`, `"a4"`, `"a5"`, or `[width, height]` |
 | `addPage(size = nil)` | A new page (the document's size unless given) |
 | `title(s)`, `author(s)`, `subject(s)`, `creator(s)` | Document properties |
+| `bookmark(title, page, y = 0, level = 1)` | An entry in the outline a viewer shows beside the pages, opening `page` at `y`; level 2 goes under the level-1 entry before it, and so on |
+| `anchor(name, page, y = 0)` | A named place for links to jump to (`linkTo`, runs with `#{dest: name}`) |
 | `save(path)` | Write the file |
 | `render` | The file as a (binary) string |
 | `pages`, `pageCount` | |
@@ -57,7 +59,7 @@ position is the start of its baseline.
 | `Pdf textWidth(str, font, size)` | Width in points |
 | `Pdf ascent(font, size)`, `descent(...)`, `capHeight(...)` | Heights in points (descent is negative) |
 | `Pdf wrap(str, width, font, size)` | Lines no wider than width: breaks at spaces, inside over-long words, and at `"\n"` |
-| `Pdf wrapRuns(runs, width, size)` | Rich text -- runs `[text, font]` or `[text, font, "#rrggbb"]` -- broken into lines at spaces (a word may span runs); each line is `[pieces, width]` for `page runs`. A run's fourth element, `#{scale: 0.7, rise: 0.4}`, makes it smaller and raises it (in ems of the size; negative lowers it), for super- and subscripts |
+| `Pdf wrapRuns(runs, width, size)` | Rich text -- runs `[text, font]` or `[text, font, "#rrggbb"]` -- broken into lines at spaces (a word may span runs); each line is `[pieces, width]` for `page runs`. A run's fourth element is a Dict of options: `#{scale: 0.7, rise: 0.4}` makes it smaller and raises it (in ems of the size; negative lowers it), for super- and subscripts; `#{url: "https://..."}` makes it a link, and `#{dest: name}` a link to an anchor (`page runs` makes them clickable) |
 | `loadImage(path)` | A `.png`, `.jpg` or `.jpeg` file as an image to draw |
 | `png(bytes)`, `jpeg(bytes)` | The same from a file's bytes |
 | `image(w, h, channels, pixels)` | From 8-bit pixels, row by row: 1 gray, 2 gray + alpha, 3 RGB, 4 RGBA |
@@ -70,7 +72,9 @@ position is the start of its baseline.
 | `text(x, y, str, angle = 0)` | Text at (x, y); angle in degrees, counterclockwise |
 | `textAlign("left" \| "center" \| "right")`, `textBaseline("alphabetic" \| "top" \| "middle" \| "bottom")` | Where `text` puts the text relative to (x, y), as in an HTML canvas; the offset turns with rotated text |
 | `textWidth(str)`, `wrap(str, width)` | In the current font |
-| `runs(x, y, pieces, size)` | One line of rich text from `Pdf wrapRuns` with its baseline at (x, y); returns its width |
+| `runs(x, y, pieces, size)` | One line of rich text from `Pdf wrapRuns` with its baseline at (x, y); returns its width. Pieces with a `url` or `dest` are clickable where they are drawn |
+| `link(x, y, w, h, url)` | A clickable area (top left at x, y) that opens `url` |
+| `linkTo(x, y, w, h, name)` | A clickable area that jumps to the anchor `name` (left out if there is none) |
 | `paragraph(x, y, width, str, align = "left", lineHeight = nil)` | Wrapped text in a box whose top is y; returns the y below it |
 | `fillColor(r, g, b)`, `strokeColor(r, g, b)` | 0..255 each, or one `"#rrggbb"` string |
 | `lineWidth(w)`, `dash([on, off, ...])`, `dash(nil)` | |
@@ -96,6 +100,7 @@ position is the start of its baseline.
 | `space(h)` | Vertical space |
 | `ensure(h)` | Starts a new page unless h points fit; returns the page to draw on at (`x`, `y`) |
 | `advance(h)` | Move down past what you drew |
+| `bookmark(title, level = 1)`, `anchor(name)` | An outline entry, or a named place, where the flow is |
 | `page`, `newPage`, `x`, `y`, `width`, `bottom` | |
 
 ## Images
@@ -128,7 +133,7 @@ written as `?`.
 - Compressed content streams and raw-pixel images (PNG and JPEG stay compressed)
 - Interlaced PNGs, and PNGs with alpha without decoding them first
 - Embedded TrueType fonts, for any Unicode text
-- Links, outlines/bookmarks, forms
+- Forms; links to other files
 
 ## Develop
 

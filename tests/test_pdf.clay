@@ -377,4 +377,57 @@ Test describe("rich text") {
     }
 }
 
+Test describe("links and bookmarks") {
+    Test it("makes areas and link runs clickable") {
+        doc = Pdf new()
+        page = doc addPage()
+        page link(72, 100, 50, 12, "https://example.com/?a=(1)")
+        flow = doc flow(72)
+        runs = [["See ", "Helvetica"], ["the docs", "Helvetica", "#1a5fb4", #{url: "https://x.org"}], [" and ", "Helvetica"],
+                ["two", "Helvetica", "#1a5fb4", #{url: "https://a"}], ["three", "Helvetica", "#1a5fb4", #{url: "https://b"}]]
+        lines = Pdf wrapRuns(runs, 500, 10)
+        // a link's words and the space between them are one piece; two links side by side are not
+        Test assertEqual((lines first at(0)) map { |p| p at(0) }, ["See ", "the docs", " and ", "two", "three"])
+        flow richParagraph(runs)
+        pdf = doc render
+        Check structure(pdf)
+        Test assertTrue(pdf contains("/Subtype /Link /Rect [72 680 122 692]"))     // page 1: x 72..122, y from the top
+        Test assertTrue(pdf contains("/URI (https://example.com/?a=\\(1\\))"))
+        Test assertTrue(pdf contains("/URI (https://x.org)") && pdf contains("/URI (https://a)") && pdf contains("/URI (https://b)"))
+        Test assertTrue(pdf contains("/Annots ["))
+        Test assertEqual((pdf split("/Subtype /Link")) size - 1, 4)
+    }
+    Test it("jumps to anchors, and leaves out links to none") {
+        doc = Pdf new()
+        p1 = doc addPage()
+        p2 = doc addPage()
+        doc anchor("results", p2, 100)
+        p1 linkTo(72, 72, 40, 12, "results")
+        p1 linkTo(72, 90, 40, 12, "nowhere")
+        p1 runs(72, 120, [["go", "Helvetica", nil, #{dest: "results"}]], 10)
+        pdf = doc render
+        Check structure(pdf)
+        Test assertEqual((pdf split("/Subtype /Link")) size - 1, 2)            // "nowhere" is left out
+        Test assertTrue(pdf contains("/Dest [7 0 R /XYZ 0 692 null]"))          // page 2 (object 7, after a font), 100 from its top
+    }
+    Test it("writes an outline of bookmarks, nested by level") {
+        doc = Pdf new()
+        flow = doc flow(72)
+        flow bookmark("Intro")
+        flow paragraph("text")
+        flow bookmark("Detail", 2)
+        flow newPage()
+        flow bookmark("More detail", 2)
+        flow bookmark("Results", 1)
+        pdf = doc render
+        Check structure(pdf)
+        Test assertTrue(pdf contains("/Outlines ") && pdf contains("/PageMode /UseOutlines"))
+        Test assertTrue(pdf contains("/Type /Outlines /First "))
+        Test assertTrue(pdf contains("/Count 4 >>"))                              // four items in all
+        Test assertTrue(pdf contains("/Title (Intro)") && pdf contains("/Count 2"))  // Intro holds two
+        Test assertTrue(pdf contains("/Title (Results)"))
+        Test assertRaises({ doc bookmark("x", flow page, 0, 0) })
+    }
+}
+
 Test run

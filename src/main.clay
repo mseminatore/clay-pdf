@@ -55,6 +55,22 @@ Pdf = Object clone {
         self _gstates = []       // opacities used, "fill stroke": /GS1, ...
         self _images = []        // images drawn: /Im1, ...
         self _info = #{}
+        self _anchors = #{}      // name -> [page, y]: where linkTo jumps
+        self _bookmarks = []     // [title, page, y, level]: the outline, in order
+        self
+    }
+
+    // A named place, for links to jump to (page linkTo, runs with a dest)
+    anchor(name, page, y = 0) {
+        _anchors set(name toString, [page, y])
+        self
+    }
+
+    // An entry in the document's outline (the bookmarks a viewer lists beside
+    // the pages), opening page at y; level 1 is the top, 2 under the 1 before it...
+    bookmark(title, page, y = 0, level = 1) {
+        (level < 1) ifTrue { raise("Pdf: a bookmark's level is 1 or more") }
+        _bookmarks push([title toString, page, y, level])
         self
     }
 
@@ -149,7 +165,8 @@ Pdf = Object clone {
     // (adjacent ones in the same style merged), to draw with page runs.
     wrapRuns(runs, width, size = 12) {
         // words: [fragments, space], a fragment [text, font, color] (and its
-        // options), space the style ([font, color]) of the space before the word, or nil
+        // options), space the piece for the space before the word ([" ", font,
+        // color] and its run's options), or nil
         words = []
         frags = []
         spaced = nil
@@ -163,7 +180,7 @@ Pdf = Object clone {
             parts each { |part|
                 (j > 0) ifTrue {
                     (frags size > 0) ifTrue { words push([frags, spaced]); frags = []; spaced = nil }
-                    pending = [font, color]
+                    pending = (opts == nil) ifTrue { [" ", font, color] } ifFalse { [" ", font, color, opts] }
                 }
                 (part != "") ifTrue {
                     (frags size == 0) ifTrue { spaced = pending; pending = nil }
@@ -181,16 +198,16 @@ Pdf = Object clone {
             fr = word at(0)
             w = 0
             fr each { |f| w = w + Pdf _pieceWidth(f, size) }
-            // a space between words keeps the style of the run it is in
+            // a space between words keeps the style (and link) of the run it is in
             sp = word at(1)
-            gap = ((line size > 0) && (sp != nil)) ifTrue { Pdf textWidth(" ", sp at(0), size) } ifFalse { 0 }
+            gap = ((line size > 0) && (sp != nil)) ifTrue { Pdf _pieceWidth(sp, size) } ifFalse { 0 }
             ((line size > 0) && ((lineW + gap + w) > width)) ifTrue {
                 lines push([line, lineW])
                 line = []
                 lineW = 0
                 gap = 0
             }
-            (gap > 0) ifTrue { line = Pdf _addPiece(line, [" ", sp at(0), sp at(1)]) }
+            (gap > 0) ifTrue { line = Pdf _addPiece(line, sp) }
             fr each { |f| line = Pdf _addPiece(line, f) }
             lineW = lineW + gap + w
         }
@@ -222,7 +239,16 @@ Pdf = Object clone {
         o = (piece size > 3) ifTrue { piece at(3) } ifFalse { nil }
         (o == nil) ifTrue { 0 } ifFalse { (o get("rise")) ?? 0 }
     }
-    _sameShift(a, b) { ((Pdf _scale(a)) == (Pdf _scale(b))) && ((Pdf _rise(a)) == (Pdf _rise(b))) }
+    // Pieces that can be drawn as one: the same size and rise, and the same
+    // link (a space between two words of one link joins them)
+    _sameShift(a, b) {
+        ((Pdf _scale(a)) == (Pdf _scale(b))) && ((Pdf _rise(a)) == (Pdf _rise(b))) &&
+            ((Pdf _opt(a, "url")) == (Pdf _opt(b, "url"))) && ((Pdf _opt(a, "dest")) == (Pdf _opt(b, "dest")))
+    }
+    _opt(piece, key) {
+        o = (piece size > 3) ifTrue { piece at(3) } ifFalse { nil }
+        (o == nil) ifTrue { nil } ifFalse { o get(key) }
+    }
 
     // A piece's width at size, its scale applied
     _pieceWidth(piece, size) { Pdf textWidth(piece at(0), piece at(1), size * (Pdf _scale(piece))) }
@@ -286,8 +312,53 @@ Pdf = Object clone {
         imageNums = #{}
         last = infoNum
         images size times { |k| imageNums set(k toString, infoNum + 1 + k); last = infoNum + 1 + k }
+        // then each page's links (an annotation each), then the outline
+        pageRef = { |p| (pageBase + 2 * (_pages indexOf(p))) toString + " 0 R" }
+        dest = { |p, y| "[" + (pageRef value(p)) + " /XYZ 0 " + (Pdf num(p height - y)) + " null]" }
+        annots = []                     // per page: [[object number, dictionary], ...]
+        _pages each { |p|
+            list = []
+            p _links each { |l|
+                target = l at(4)
+                body = nil
+                ((target type) == "Dict") ifTrue {
+                    a = _anchors get((target get("dest")) toString)
+                    (a != nil) ifTrue { body = "/Dest " + (dest value(a at(0), a at(1))) }
+                } ifFalse {
+                    body = "/A << /Type /Action /S /URI /URI " + (Pdf string(target)) + " >>"
+                }
+                (body != nil) ifTrue {
+                    last = last + 1
+                    r = (Pdf num(l at(0))) + " " + (Pdf num(p height - (l at(1)) - (l at(3)))) + " " +
+                        (Pdf num((l at(0)) + (l at(2)))) + " " + (Pdf num(p height - (l at(1))))
+                    list push([last, "<< /Type /Annot /Subtype /Link /Rect [" + r + "] /Border [0 0 0] " + body + " >>"])
+                }
+            }
+            annots push(list)
+        }
+        outlineNum = nil
+        items = []
+        (_bookmarks size > 0) ifTrue {
+            last = last + 1
+            outlineNum = last
+            _bookmarks each { |b|
+                last = last + 1
+                items push(#{num: last, title: b at(0), page: b at(1), y: b at(2), level: b at(3), kids: [], parent: nil})
+            }
+            // each item's parent: the closest item before it at a lower level
+            stack = []
+            items each { |it|
+                { (stack size > 0) && (((stack last) get("level")) >= (it get("level"))) } whileTrue { stack = stack slice(0, stack size - 1) }
+                parent = (stack size > 0) ifTrue { stack last } ifFalse { nil }
+                it set("parent", parent)
+                (parent != nil) ifTrue { (parent get("kids")) push(it) }
+                stack push(it)
+            }
+        }
 
-        w object(1, "<< /Type /Catalog /Pages 2 0 R >>")
+        catalog = "<< /Type /Catalog /Pages 2 0 R"
+        (outlineNum != nil) ifTrue { catalog = catalog + " /Outlines " + outlineNum toString + " 0 R /PageMode /UseOutlines" }
+        w object(1, catalog + " >>")
         kids = []
         i = 0
         { i < nPages } whileTrue {
@@ -332,8 +403,10 @@ Pdf = Object clone {
         { i < nPages } whileTrue {
             page = _pages at(i)
             num = pageBase + 2 * i
+            links = annots at(i)
+            annotRefs = (links size > 0) ifTrue { " /Annots [" + ((links map { |a| (a at(0)) toString + " 0 R" }) join(" ")) + "]" } ifFalse { "" }
             w object(num, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 " + (Pdf num(page width)) + " " +
-                (Pdf num(page height)) + "] /Resources 3 0 R /Contents " + (num + 1) toString + " 0 R >>")
+                (Pdf num(page height)) + "] /Resources 3 0 R /Contents " + (num + 1) toString + " 0 R" + annotRefs + " >>")
             w stream(num + 1, page content)
             i = i + 1
         }
@@ -350,7 +423,35 @@ Pdf = Object clone {
             }
             w stream(imageNums get(k toString), img _data, dict)
         }
+        annots each { |list| list each { |a| w object(a at(0), a at(1)) } }
+        (outlineNum != nil) ifTrue {
+            top = items filter { |it| (it get("parent")) == nil }
+            w object(outlineNum, "<< /Type /Outlines /First " + ((top first) get("num")) toString + " 0 R /Last " +
+                ((top last) get("num")) toString + " 0 R /Count " + (items size) toString + " >>")
+            items each { |it|
+                parent = it get("parent")
+                sibs = (parent == nil) ifTrue { top } ifFalse { parent get("kids") }
+                k = sibs indexOf(it)
+                d = "<< /Title " + (Pdf string(it get("title"))) + " /Parent " +
+                    ((parent == nil) ifTrue { outlineNum } ifFalse { parent get("num") }) toString + " 0 R"
+                (k > 0) ifTrue { d = d + " /Prev " + ((sibs at(k - 1)) get("num")) toString + " 0 R" }
+                (k < (sibs size - 1)) ifTrue { d = d + " /Next " + ((sibs at(k + 1)) get("num")) toString + " 0 R" }
+                kids = it get("kids")
+                (kids size > 0) ifTrue {
+                    d = d + " /First " + ((kids first) get("num")) toString + " 0 R /Last " + ((kids last) get("num")) toString +
+                        " 0 R /Count " + (Pdf _descendants(it)) toString
+                }
+                w object(it get("num"), d + " /Dest " + (dest value(it get("page"), it get("y"))) + " >>")
+            }
+        }
         w finish(last, 1, infoNum)
+    }
+
+    // How many outline items are under one (all open)
+    _descendants(it) {
+        n = 0
+        (it get("kids")) each { |k| n = n + 1 + (Pdf _descendants(k)) }
+        n
     }
 
     // The /F<n> name of a standard font, adding it to the document
@@ -480,10 +581,23 @@ PdfPage = Object clone {
         self _fontSize = 12
         self _align = "left"
         self _baseline = "alphabetic"
+        self _links = []       // [x, y, w, h, url or #{dest: name}]
         self
     }
 
     width() { _w }
+
+    // A clickable area (x, y its top left) that opens url in a browser
+    link(x, y, w, h, url) {
+        _links push([x, y, w, h, url toString])
+        self
+    }
+
+    // A clickable area that jumps to the document's anchor called name
+    linkTo(x, y, w, h, name) {
+        _links push([x, y, w, h, #{dest: name toString}])
+        self
+    }
     height() { _h }
     content() { _ops join("\n") }
 
@@ -512,8 +626,18 @@ PdfPage = Object clone {
             self font(p at(1), sz)
             c = (p size > 2) ifTrue { p at(2) } ifFalse { nil }
             self fillColor(c ?? "#000000")
-            self _text(cx, y - ((Pdf _rise(p)) * size), p at(0), 0)
-            cx = cx + Pdf textWidth(p at(0), p at(1), sz)
+            base = y - ((Pdf _rise(p)) * size)
+            self _text(cx, base, p at(0), 0)
+            pw = Pdf textWidth(p at(0), p at(1), sz)
+            // a link's run (options url: or dest:) is clickable where it is drawn
+            o = (p size > 3) ifTrue { p at(3) } ifFalse { nil }
+            (o != nil) ifTrue {
+                top = base - (Pdf ascent("Helvetica", sz))
+                h = (Pdf ascent("Helvetica", sz)) - (Pdf descent("Helvetica", sz))
+                (o get("url") != nil) ifTrue { self link(cx, top, pw, h, o get("url")) }
+                (o get("dest") != nil) ifTrue { self linkTo(cx, top, pw, h, o get("dest")) }
+            }
+            cx = cx + pw
         }
         cx - x
     }
@@ -757,6 +881,18 @@ PdfFlow = Object clone {
     x() { _margin }
     width() { _page width - 2 * _margin }
     bottom() { _page height - _margin }
+
+    // A named place here, for links to jump to (see Pdf anchor)
+    anchor(name) {
+        _doc anchor(name, _page, _y)
+        self
+    }
+
+    // An outline entry (see Pdf bookmark) that opens here
+    bookmark(title, level = 1) {
+        _doc bookmark(title, _page, _y, level)
+        self
+    }
 
     // Start a new page; drawing continues at its top margin
     newPage() {
