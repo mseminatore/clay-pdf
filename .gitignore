@@ -1,5 +1,6 @@
 # bricks installed by `clay bricks install`
 bricks/
+.DS_Store
 
 # output of the examples and tests
 *.pdf
