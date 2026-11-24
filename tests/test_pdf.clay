@@ -375,6 +375,32 @@ Test describe("rich text") {
         Test assertTrue(page content contains("/F1 5 Tf"))              // half the size
         Test assertTrue(page content contains(" 696 Td (23) Tj"))        // 0.4 em above the baseline (792 - 100 + 4)
     }
+    Test it("draws the rows of a stack over each other, centered in the column") {
+        // limits of a sum: the sign (row 0) and what is under and over it, one column
+        big = #{scale: 1, rise: 0, stack: "0:0"}
+        lo = #{scale: 0.5, rise: -0.8, stack: "0:1"}
+        hi = #{scale: 0.5, rise: 0.8, stack: "0:2"}
+        runs = [["a ", "Helvetica"], ["S", "Helvetica", nil, big], ["lo", "Helvetica", nil, lo], ["hi", "Helvetica", nil, hi], [" z", "Helvetica"]]
+        lines = Pdf wrapRuns(runs, 500, 10)
+        pieces = lines first at(0)
+        Test assertEqual(pieces size, 5)                                // different stacks never merge
+        wS = Pdf textWidth("S", "Helvetica", 10)
+        wLo = Pdf textWidth("lo", "Helvetica", 5)
+        wHi = Pdf textWidth("hi", "Helvetica", 5)
+        col = Math max(wS, Math max(wLo, wHi))
+        w = Pdf textWidth("a ", "Helvetica", 10) + col + Pdf textWidth(" z", "Helvetica", 10)
+        Test assertEqual(Math round((lines first at(1)) * 1000), Math round(w * 1000))   // the column counts once
+        laid = Pdf _layout(pieces, 10)
+        x0 = Pdf textWidth("a ", "Helvetica", 10)
+        Test assertEqual(Math round(((laid at(0)) at(1)) * 1000), Math round((x0 + ((col - wS) / 2)) * 1000))
+        Test assertEqual(Math round(((laid at(0)) at(2)) * 1000), Math round((x0 + ((col - wLo) / 2)) * 1000))
+        Test assertEqual(Math round(((laid at(0)) at(4)) * 1000), Math round((x0 + col) * 1000))   // the text after it
+        doc = Pdf new()
+        page = doc addPage()
+        Test assertEqual(Math round((page runs(72, 100, pieces, 10)) * 1000), Math round(w * 1000))
+        Test assertTrue(page content contains(" 700 Td (S) Tj") == false)        // not at the line's start: centered
+        Check structure(doc render)
+    }
 }
 
 Test describe("links and bookmarks") {

@@ -161,7 +161,9 @@ Pdf = Object clone {
     // nil for black. A fourth element, a Dict, can size and raise it: scale
     // (of the size, e.g. 0.7 for a superscript) and rise (up from the
     // baseline, in ems of the size; below it if negative); other keys are
-    // kept, unused. Each line is [pieces, width], its pieces runs again
+    // kept, unused (stack: "column:row" is used: the pieces of one column are
+    // rows drawn over each other, each centered in the column's width, as the
+    // limits of a sum in math). Each line is [pieces, width], its pieces runs again
     // (adjacent ones in the same style merged), to draw with page runs.
     wrapRuns(runs, width, size = 12) {
         // words: [fragments, space], a fragment [text, font, color] (and its
@@ -197,7 +199,7 @@ Pdf = Object clone {
         words each { |word|
             fr = word at(0)
             w = 0
-            fr each { |f| w = w + Pdf _pieceWidth(f, size) }
+            w = (Pdf _layout(fr, size)) at(1)
             // a space between words keeps the style (and link) of the run it is in
             sp = word at(1)
             gap = ((line size > 0) && (sp != nil)) ifTrue { Pdf _pieceWidth(sp, size) } ifFalse { 0 }
@@ -230,6 +232,52 @@ Pdf = Object clone {
         line
     }
 
+    // Where each piece starts, from the line's start, and the line's width.
+    // Pieces of one stack (option stack: "column:row") are rows of a column:
+    // each row is centered in the column's width, which is its widest row's.
+    _layout(pieces, size) {
+        xs = []
+        adv = 0
+        i = 0
+        n = pieces size
+        { i < n } whileTrue {
+            col = Pdf _stackColumn(pieces at(i))
+            (col == nil) ifTrue {
+                xs push(adv)
+                adv = adv + (Pdf _pieceWidth(pieces at(i), size))
+                i = i + 1
+            } ifFalse {
+                j = i
+                rowW = #{}
+                { (j < n) && ((Pdf _stackColumn(pieces at(j))) == col) } whileTrue {
+                    row = Pdf _stackRow(pieces at(j))
+                    rowW set(row, ((rowW get(row)) ?? 0) + (Pdf _pieceWidth(pieces at(j), size)))
+                    j = j + 1
+                }
+                w = 0
+                rowW each { |k, v| w = Math max(w, v) }
+                used = #{}
+                k = i
+                { k < j } whileTrue {
+                    row = Pdf _stackRow(pieces at(k))
+                    done = (used get(row)) ?? 0
+                    xs push(adv + ((w - (rowW get(row))) / 2) + done)
+                    used set(row, done + (Pdf _pieceWidth(pieces at(k), size)))
+                    k = k + 1
+                }
+                adv = adv + w
+                i = j
+            }
+        }
+        [xs, adv]
+    }
+    // The column and row a piece's stack option names, or nil
+    _stackColumn(piece) {
+        st = Pdf _opt(piece, "stack")
+        (st == nil) ifTrue { nil } ifFalse { (st toString split(":")) at(0) }
+    }
+    _stackRow(piece) { ((Pdf _opt(piece, "stack")) toString split(":")) at(1) }
+
     // A run's scale and rise (1 and 0 without options)
     _scale(piece) {
         o = (piece size > 3) ifTrue { piece at(3) } ifFalse { nil }
@@ -243,7 +291,8 @@ Pdf = Object clone {
     // link (a space between two words of one link joins them)
     _sameShift(a, b) {
         ((Pdf _scale(a)) == (Pdf _scale(b))) && ((Pdf _rise(a)) == (Pdf _rise(b))) &&
-            ((Pdf _opt(a, "url")) == (Pdf _opt(b, "url"))) && ((Pdf _opt(a, "dest")) == (Pdf _opt(b, "dest")))
+            ((Pdf _opt(a, "url")) == (Pdf _opt(b, "url"))) && ((Pdf _opt(a, "dest")) == (Pdf _opt(b, "dest"))) &&
+            ((Pdf _opt(a, "stack")) == (Pdf _opt(b, "stack")))
     }
     _opt(piece, key) {
         o = (piece size > 3) ifTrue { piece at(3) } ifFalse { nil }
@@ -620,8 +669,12 @@ PdfPage = Object clone {
     // starting at (x, y); returns its width. Leaves the font and color of
     // the last piece set.
     runs(x, y, pieces, size = 12) {
-        cx = x
+        laid = Pdf _layout(pieces, size)
+        xs = laid at(0)
+        k = 0
         pieces each { |p|
+            cx = x + (xs at(k))
+            k = k + 1
             sz = size * (Pdf _scale(p))
             self font(p at(1), sz)
             c = (p size > 2) ifTrue { p at(2) } ifFalse { nil }
@@ -637,9 +690,8 @@ PdfPage = Object clone {
                 (o get("url") != nil) ifTrue { self link(cx, top, pw, h, o get("url")) }
                 (o get("dest") != nil) ifTrue { self linkTo(cx, top, pw, h, o get("dest")) }
             }
-            cx = cx + pw
         }
-        cx - x
+        laid at(1)
     }
 
     // Where text(x, y, ...) puts the text relative to (x, y), like a canvas:
