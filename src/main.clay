@@ -163,7 +163,9 @@ Pdf = Object clone {
     // baseline, in ems of the size; below it if negative); other keys are
     // kept, unused (stack: "column:row" is used: the pieces of one column are
     // rows drawn over each other, each centered in the column's width, as the
-    // limits of a sum in math). Each line is [pieces, width], its pieces runs again
+    // limits of a sum in math); a piece with the option rule: t is not text but
+    // a horizontal bar t ems thick (of the size) across its column, as a
+    // fraction's, and has no width of its own. Each line is [pieces, width], its pieces runs again
     // (adjacent ones in the same style merged), to draw with page runs.
     wrapRuns(runs, width, size = 12) {
         // words: [fragments, space], a fragment [text, font, color] (and its
@@ -232,11 +234,13 @@ Pdf = Object clone {
         line
     }
 
-    // Where each piece starts, from the line's start, and the line's width.
+    // Where each piece starts, from the line's start, the line's width, and for
+    // a piece of a stack its column's [start, width] (else nil).
     // Pieces of one stack (option stack: "column:row") are rows of a column:
     // each row is centered in the column's width, which is its widest row's.
     _layout(pieces, size) {
         xs = []
+        cols = []
         adv = 0
         i = 0
         n = pieces size
@@ -244,6 +248,7 @@ Pdf = Object clone {
             col = Pdf _stackColumn(pieces at(i))
             (col == nil) ifTrue {
                 xs push(adv)
+                cols push(nil)
                 adv = adv + (Pdf _pieceWidth(pieces at(i), size))
                 i = i + 1
             } ifFalse {
@@ -262,6 +267,7 @@ Pdf = Object clone {
                     row = Pdf _stackRow(pieces at(k))
                     done = (used get(row)) ?? 0
                     xs push(adv + ((w - (rowW get(row))) / 2) + done)
+                    cols push([adv, w])
                     used set(row, done + (Pdf _pieceWidth(pieces at(k), size)))
                     k = k + 1
                 }
@@ -269,7 +275,7 @@ Pdf = Object clone {
                 i = j
             }
         }
-        [xs, adv]
+        [xs, adv, cols]
     }
     // The column and row a piece's stack option names, or nil
     _stackColumn(piece) {
@@ -299,8 +305,11 @@ Pdf = Object clone {
         (o == nil) ifTrue { nil } ifFalse { o get(key) }
     }
 
-    // A piece's width at size, its scale applied
-    _pieceWidth(piece, size) { Pdf textWidth(piece at(0), piece at(1), size * (Pdf _scale(piece))) }
+    // A piece's width at size, its scale applied (a bar has none)
+    _pieceWidth(piece, size) {
+        ((Pdf _opt(piece, "rule")) != nil) ifTrue { return 0 }
+        Pdf textWidth(piece at(0), piece at(1), size * (Pdf _scale(piece)))
+    }
 
     // How many bytes of str fit in width, ending on a UTF-8 character boundary
     // (at least one character)
@@ -680,8 +689,19 @@ PdfPage = Object clone {
             c = (p size > 2) ifTrue { p at(2) } ifFalse { nil }
             self fillColor(c ?? "#000000")
             base = y - ((Pdf _rise(p)) * size)
-            self _text(cx, base, p at(0), 0)
-            pw = Pdf textWidth(p at(0), p at(1), sz)
+            bar = Pdf _opt(p, "rule")
+            (bar != nil) ifTrue {
+                // a fraction's bar, across its column
+                col = (laid at(2)) at(k - 1)
+                self save()
+                self strokeColor(c ?? "#000000")
+                self lineWidth(Math max(bar * size, 0.3))
+                self line(x + (col at(0)), base, x + (col at(0)) + (col at(1)), base)
+                self restore()
+            } ifFalse {
+                self _text(cx, base, p at(0), 0)
+            }
+            pw = Pdf _pieceWidth(p, size)
             // a link's run (options url: or dest:) is clickable where it is drawn
             o = (p size > 3) ifTrue { p at(3) } ifFalse { nil }
             (o != nil) ifTrue {

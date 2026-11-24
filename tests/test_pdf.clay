@@ -375,6 +375,26 @@ Test describe("rich text") {
         Test assertTrue(page content contains("/F1 5 Tf"))              // half the size
         Test assertTrue(page content contains(" 696 Td (23) Tj"))        // 0.4 em above the baseline (792 - 100 + 4)
     }
+    Test it("draws a bar across its column, with no width of its own") {
+        num = #{scale: 1, rise: 0.5, stack: "0:0"}
+        bar = #{scale: 1, rise: 0.28, stack: "0:1", rule: 0.065}
+        den = #{scale: 1, rise: -0.5, stack: "0:2"}
+        pieces = (Pdf wrapRuns([["1", "Helvetica", nil, num], ["\xc2\xa0", "Helvetica", nil, bar], ["nnnn", "Helvetica", nil, den]], 500, 10)) first at(0)
+        Test assertEqual(pieces size, 3)
+        laid = Pdf _layout(pieces, 10)
+        w = Pdf textWidth("nnnn", "Helvetica", 10)
+        Test assertEqual(Math round((laid at(1)) * 1000), Math round(w * 1000))        // the column, once
+        Test assertEqual(((laid at(2)) at(1)), [0, w])                                  // the bar spans it, from its start
+        Test assertEqual(((laid at(0)) at(0)), Pdf textWidth("nnnn", "Helvetica", 10) / 2 - Pdf textWidth("1", "Helvetica", 10) / 2)
+        doc = Pdf new()
+        page = doc addPage()
+        page runs(72, 100, pieces, 10)
+        // the bar: 0.65 pt thick, as wide as the column, at 0.28 em above the baseline (792 - 100 + 2.8)
+        Test assertTrue(page content contains("0.65 w"))
+        Test assertTrue(page content contains(" 694.8 m ") && page content contains(" 694.8 l S"))
+        Test assertTrue(page content contains("q\n") && page content contains("\nQ"))   // the line state is put back
+        Check structure(doc render)
+    }
     Test it("draws the rows of a stack over each other, centered in the column") {
         // limits of a sum: the sign (row 0) and what is under and over it, one column
         big = #{scale: 1, rise: 0, stack: "0:0"}
